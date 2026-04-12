@@ -9,6 +9,12 @@ pymupdf4llm
 seaborn
 # Common Requirements
 numpy
+pandas
+scikit-learn
+pyarrow
+duckdb
+rapidfuzz
+pytest
 transformers
 datasets
 tiktoken

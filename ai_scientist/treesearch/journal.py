@@ -6,8 +6,10 @@ from typing import Literal, Optional, Any
 import copy
 import os
 import json
+from collections.abc import Mapping
 
 from dataclasses_json import DataClassJsonMixin
+from ..audits.schema import validate_audit_results, validate_metrics_before_after
 from .interpreter import ExecutionResult
 from .utils.metric import MetricValue, WorstMetricValue
 from .utils.response import trim_long_string
@@ -19,6 +21,13 @@ import logging
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+AUDIT_RESULT_ARTIFACT = "audit_results.json"
+METRICS_BEFORE_AFTER_ARTIFACT = "metrics_before_after.json"
+REPRODUCIBILITY_SIGNAL_ARTIFACTS = (
+    "reproducibility_summary.json",
+    "reproducibility.json",
+)
 
 node_selection_spec = FunctionSpec(
     name="select_best_implementation",
@@ -358,6 +367,16 @@ class InteractiveSession(DataClassJsonMixin):
         return "\n".join(trace).strip()
 
 
+@dataclass(frozen=True)
+class AuditNodeRank:
+    node: Node
+    audit_score: float
+    evidence_coverage: float
+    remediation_confirmation: float
+    reproducibility_present: int
+    reproducibility_signal: float
+
+
 @dataclass
 class Journal:
     """A collection of nodes representing the solution tree."""
@@ -417,6 +436,143 @@ class Journal:
         """Return a list of all metric values in the journal."""
         return [n.metric for n in self.nodes]
 
+    @staticmethod
+    def _read_json_file(path: Path) -> Mapping[str, Any] | None:
+        if not path.exists():
+            return None
+        try:
+            with path.open() as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, Mapping) else None
+
+    @staticmethod
+    def _coerce_numeric(value: Any) -> float | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None
+
+    def _load_reproducibility_signal(self, artifact_dir: Path) -> tuple[int, float]:
+        for artifact_name in REPRODUCIBILITY_SIGNAL_ARTIFACTS:
+            artifact_path = artifact_dir / artifact_name
+            artifact = self._read_json_file(artifact_path)
+            if artifact is None:
+                continue
+
+            for key in (
+                "reproducibility_score",
+                "consistency_score",
+                "stability_score",
+                "score",
+                "value",
+            ):
+                numeric_value = self._coerce_numeric(artifact.get(key))
+                if numeric_value is not None:
+                    return 1, numeric_value
+
+        return 0, 0.0
+
+    def _load_audit_node_rank(self, node: Node) -> AuditNodeRank | None:
+        if not node.exp_results_dir:
+            return None
+
+        artifact_dir = Path(node.exp_results_dir)
+        audit_results = self._read_json_file(artifact_dir / AUDIT_RESULT_ARTIFACT)
+        if audit_results is None:
+            return None
+
+        try:
+            validate_audit_results(audit_results)
+        except Exception:
+            return None
+
+        audit_score = self._coerce_numeric(audit_results["audit_score"]["value"])
+        evidence_coverage = self._coerce_numeric(
+            audit_results["confidence"]["evidence_coverage"]
+        )
+        if audit_score is None or evidence_coverage is None:
+            return None
+
+        findings_summary = audit_results["findings_summary"]
+        remediation_confirmation = 0.0
+        if findings_summary["total_findings"] == 0:
+            remediation_confirmation = 1.0
+        else:
+            metrics_before_after = self._read_json_file(
+                artifact_dir / METRICS_BEFORE_AFTER_ARTIFACT
+            )
+            if metrics_before_after is not None:
+                try:
+                    validate_metrics_before_after(metrics_before_after)
+                except Exception:
+                    metrics_before_after = None
+
+            if metrics_before_after is not None:
+                provenance_matches = (
+                    metrics_before_after["provenance"]["dataset_fingerprint"]
+                    == audit_results["provenance"]["dataset_fingerprint"]
+                )
+                split_manifest_path = Path(
+                    metrics_before_after["split_information"]["split_manifest_path"]
+                ).name
+                if provenance_matches and split_manifest_path == "split_manifest.json":
+                    remediation_confirmation = float(
+                        len(metrics_before_after["deltas"]) > 0
+                    )
+
+        reproducibility_present, reproducibility_signal = (
+            self._load_reproducibility_signal(artifact_dir)
+        )
+        return AuditNodeRank(
+            node=node,
+            audit_score=audit_score,
+            evidence_coverage=evidence_coverage,
+            remediation_confirmation=remediation_confirmation,
+            reproducibility_present=reproducibility_present,
+            reproducibility_signal=reproducibility_signal,
+        )
+
+    @staticmethod
+    def _sort_audit_node_ranks(
+        audit_node_ranks: list[AuditNodeRank],
+    ) -> list[AuditNodeRank]:
+        return sorted(
+            audit_node_ranks,
+            key=lambda rank: (
+                -rank.audit_score,
+                -rank.evidence_coverage,
+                -rank.remediation_confirmation,
+                -rank.reproducibility_present,
+                -rank.reproducibility_signal,
+                rank.node.id,
+            ),
+        )
+
+    def get_ranked_nodes(self, only_good=True) -> list[Node]:
+        if only_good:
+            nodes = self.good_nodes
+        else:
+            nodes = self.nodes
+
+        audit_node_ranks = []
+        for node in nodes:
+            if node.is_seed_node:
+                continue
+            audit_node_rank = self._load_audit_node_rank(node)
+            if audit_node_rank is not None:
+                audit_node_ranks.append(audit_node_rank)
+
+        if audit_node_ranks:
+            return [
+                audit_node_rank.node
+                for audit_node_rank in self._sort_audit_node_ranks(audit_node_ranks)
+            ]
+
+        return sorted(nodes, key=lambda n: n.metric, reverse=True)
+
     def get_best_node(self, only_good=True, use_val_metric_only=False, cfg=None) -> None | Node:
         """Return the best solution found so far."""
         if only_good:
@@ -425,6 +581,28 @@ class Journal:
                 return None
         else:
             nodes = self.nodes
+
+        audit_node_ranks = []
+        for node in nodes:
+            if node.is_seed_node:
+                continue
+            audit_node_rank = self._load_audit_node_rank(node)
+            if audit_node_rank is not None:
+                audit_node_ranks.append(audit_node_rank)
+
+        if audit_node_ranks:
+            selected_rank = self._sort_audit_node_ranks(audit_node_ranks)[0]
+            logger.warning(
+                "Selected node %s via deterministic audit ranking "
+                "(audit_score=%.4f, evidence_coverage=%.4f, remediation_confirmation=%.1f, reproducibility_present=%d, reproducibility_signal=%.4f)",
+                selected_rank.node.id,
+                selected_rank.audit_score,
+                selected_rank.evidence_coverage,
+                selected_rank.remediation_confirmation,
+                selected_rank.reproducibility_present,
+                selected_rank.reproducibility_signal,
+            )
+            return selected_rank.node
 
         if use_val_metric_only:
             return max(nodes, key=lambda n: n.metric)

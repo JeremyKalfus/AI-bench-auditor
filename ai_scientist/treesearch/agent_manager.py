@@ -13,9 +13,84 @@ import json
 from rich import print
 from .utils.serialize import parse_markdown_to_dict
 from .utils.metric import WorstMetricValue
+from ..audits import (
+    validate_audit_results,
+    validate_findings_columns,
+    validate_metrics_before_after,
+    validate_split_manifest,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+AUDIT_TASK_FIELD_NAMES = (
+    "Audit Targets",
+    "Leakage Taxonomy",
+    "Acceptance Criteria",
+    "Benchmark Metadata",
+    "Dataset Context",
+)
+
+HIGH_CONFIDENCE_CLEAN_AUDIT_THRESHOLD = 0.90
+HIGH_CONFIDENCE_COVERAGE_THRESHOLD = 0.90
+
+DEFAULT_STAGE_TITLES = {
+    1: "Initial Implementation",
+    2: "Baseline Tuning",
+    3: "Creative Research",
+    4: "Ablation Studies",
+}
+
+AUDIT_STAGE_TITLES = {
+    1: "Reproduce Benchmark Protocol",
+    2: "Run Leakage Detectors",
+    3: "Confirm Findings with Remediation",
+    4: "Robustness and Audit Synthesis",
+}
+
+DEFAULT_MAIN_STAGE_GOALS = {
+    1: """
+                - Focus on getting basic working implementation
+                - Use a simple dataset
+                - Aim for basic functional correctness
+                - If you are given \"Code To Use\", you can directly use it as a starting point.""",
+    2: """
+                - Change hyperparameters such as learning rate, number of epochs, batch size, etc. to improve the performance
+                - DO NOT change the model architecture from the previous stage
+                - Introduce TWO more new datasets from HuggingFace test the model. Try very hard to think what Huggingface datasets can be used here for testing.""",
+    3: """
+                - Explore novel improvements
+                - Come up with experiments to reveal new insights
+                - Be creative and think outside the box
+                - MAKE SURE you use THREE HuggingFace dataset in total to test your models""",
+    4: """
+                - Conduct systematic component analysis that reveals the contribution of each part
+                - Use the same datasets you used from the previous stage""",
+}
+
+AUDIT_MAIN_STAGE_GOALS = {
+    1: """
+                - Reproduce the benchmark protocol on the provided dataset splits.
+                - Validate baseline scoring and metric extraction against the benchmark definition.
+                - Emit deterministic dataset context artifacts, including `dataset_card.md` and `split_manifest.json`.
+                - Prefer evidence and artifact correctness over exploratory optimization.""",
+    2: """
+                - Run leakage detectors on the declared benchmark splits.
+                - Gather concrete evidence for every suspected issue.
+                - Avoid speculative conclusions; record only supported findings.
+                - Keep detector coverage and provenance explicit in the emitted artifacts.""",
+    3: """
+                - Confirm candidate findings with remediation or falsification attempts.
+                - Compare before/after metrics using the same benchmark evaluation protocol.
+                - Rule out obvious benign explanations before escalating a claim.
+                - Record whether each finding remains confirmed, weakened, or refuted.""",
+    4: """
+                - Run robustness checks on confirmed or disputed findings.
+                - Synthesize an audit summary grounded in deterministic artifacts.
+                - Ensure the branch is evidence-complete, including provenance and remediation status.
+                - Prefer a high-confidence clean audit over unsupported claims.""",
+}
 
 
 stage_config_spec = FunctionSpec(
@@ -104,7 +179,7 @@ stage_completion_eval_spec = FunctionSpec(
 class Stage:
     name: str
     description: str
-    goals: List[str]
+    goals: str | List[str]
     max_iterations: int
     num_drafts: int
     stage_number: int
@@ -146,25 +221,19 @@ class AgentManager:
             3: "creative_research",
             4: "ablation_studies",
         }
-        self.main_stage_goals: Dict[int, str] = {
-            1: """
-                - Focus on getting basic working implementation
-                - Use a simple dataset
-                - Aim for basic functional correctness
-                - If you are given \"Code To Use\", you can directly use it as a starting point.""",
-            2: """
-                - Change hyperparameters such as learning rate, number of epochs, batch size, etc. to improve the performance
-                - DO NOT change the model architecture from the previous stage
-                - Introduce TWO more new datasets from HuggingFace test the model. Try very hard to think what Huggingface datasets can be used here for testing.""",
-            3: """
-                - Explore novel improvements
-                - Come up with experiments to reveal new insights
-                - Be creative and think outside the box
-                - MAKE SURE you use THREE HuggingFace dataset in total to test your models""",
-            4: """
-                - Conduct systematic component analysis that reveals the contribution of each part
-                - Use the same datasets you used from the previous stage""",
-        }
+        self.is_audit_task = any(
+            field_name in self.task_desc for field_name in AUDIT_TASK_FIELD_NAMES
+        )
+        self.main_stage_titles: Dict[int, str] = (
+            AUDIT_STAGE_TITLES.copy()
+            if self.is_audit_task
+            else DEFAULT_STAGE_TITLES.copy()
+        )
+        self.main_stage_goals: Dict[int, str] = (
+            AUDIT_MAIN_STAGE_GOALS.copy()
+            if self.is_audit_task
+            else DEFAULT_MAIN_STAGE_GOALS.copy()
+        )
         # Create initial stage
         self._create_initial_stage()
 
@@ -195,6 +264,49 @@ Your research idea:\n\n
         )
         if "Code" in self.task_desc:
             task_desc += "Code To Use:\n" + self.task_desc["Code"] + "\n"
+        for field_name in [
+            "Audit Targets",
+            "Leakage Taxonomy",
+            "Acceptance Criteria",
+            "Benchmark Metadata",
+            "Dataset Context",
+        ]:
+            if field_name in self.task_desc:
+                field_value = self.task_desc[field_name]
+                if isinstance(field_value, str):
+                    rendered_value = field_value
+                else:
+                    rendered_value = json.dumps(field_value, indent=2, sort_keys=True)
+                task_desc += f"{field_name}:\n{rendered_value}\n"
+        return task_desc
+
+    def _get_main_stage_title(self, main_stage_number: int) -> str:
+        return self.main_stage_titles.get(
+            main_stage_number,
+            self.main_stage_dict.get(main_stage_number, f"stage_{main_stage_number}"),
+        )
+
+    def _render_stage_goals(self, goals: str | List[str]) -> str:
+        if isinstance(goals, list):
+            rendered_goals = []
+            for goal in goals:
+                rendered_goals.append(goal if goal.lstrip().startswith("-") else f"- {goal}")
+            return "\n".join(rendered_goals)
+        return goals
+
+    def _build_task_desc_for_stage(self, stage: Stage) -> str:
+        task_desc = self._curate_task_desc(stage)
+        (
+            main_stage,
+            _main_stage_name,
+            sub_stage_num,
+            sub_stage_name,
+        ) = self.parse_stage_names(stage.name)
+        task_desc = (
+            f"{task_desc}\n\nCurrent Main Stage: {self._get_main_stage_title(main_stage)}\n"
+        )
+        task_desc += f"Sub-stage: {sub_stage_num} - {sub_stage_name}\n"
+        task_desc += "Sub-stage goals:\n" + self._render_stage_goals(stage.goals)
         return task_desc
 
     def _create_initial_stage(self):
@@ -275,17 +387,14 @@ Your research idea:\n\n
         """Create a ParallelAgent configured for the given stage"""
         stage_cfg = self.cfg.copy()
         stage_cfg.agent.search.num_drafts = stage.num_drafts
-        task_desc = self._curate_task_desc(stage)
+        task_desc = self._build_task_desc_for_stage(stage)
 
         (
             main_stage,
-            main_stage_name,
+            _main_stage_name,
             sub_stage_num,
             sub_stage_name,
         ) = self.parse_stage_names(stage.name)
-        task_desc = f"{task_desc}\n\nCurrent Main Stage: {main_stage_name}\n"
-        task_desc += f"Sub-stage: {sub_stage_num} - {sub_stage_name}\n"
-        task_desc += f"Sub-stage goals: {stage.goals}"
         print("Checking task_desc inside _create_agent_for_stage")
         print(task_desc)
 
@@ -407,9 +516,246 @@ Your research idea:\n\n
         print(f"[green]Stage {current_substage.name} not completed[/green]")
         return False
 
+    def _load_validated_json_artifact(
+        self,
+        artifact_path: Path,
+        validator: Callable[[Dict[str, Any]], None],
+        artifact_name: str,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        if not artifact_path.exists():
+            return None, f"missing {artifact_name}"
+
+        try:
+            data = json.loads(artifact_path.read_text())
+            validator(data)
+            return data, None
+        except Exception as exc:
+            return None, f"invalid {artifact_name}: {exc}"
+
+    def _validate_findings_artifact(
+        self, artifact_dir: Path
+    ) -> tuple[Optional[Path], Optional[str]]:
+        findings_candidates = (
+            artifact_dir / "findings.parquet",
+            artifact_dir / "findings.csv",
+        )
+
+        findings_path = next((path for path in findings_candidates if path.exists()), None)
+        if findings_path is None:
+            return None, "missing findings.csv or findings.parquet"
+
+        try:
+            import pandas as pd
+
+            if findings_path.suffix == ".parquet":
+                columns = list(pd.read_parquet(findings_path).columns)
+            else:
+                columns = list(pd.read_csv(findings_path, nrows=0).columns)
+            validate_findings_columns(columns)
+            return findings_path, None
+        except Exception as exc:
+            return None, f"invalid findings artifact: {exc}"
+
+    def _inspect_audit_artifacts(
+        self,
+        node: Node,
+        *,
+        require_findings: bool,
+        require_metrics_before_after: bool,
+    ) -> tuple[Optional[Dict[str, Any]], List[str]]:
+        if not node.exp_results_dir:
+            return None, ["missing experiment results directory"]
+
+        artifact_dir = Path(node.exp_results_dir)
+        if not artifact_dir.exists():
+            return None, [f"missing experiment results directory: {artifact_dir}"]
+
+        errors: List[str] = []
+        dataset_card_path = artifact_dir / "dataset_card.md"
+        if not dataset_card_path.exists():
+            errors.append("missing dataset_card.md")
+
+        split_manifest, split_error = self._load_validated_json_artifact(
+            artifact_dir / "split_manifest.json",
+            validate_split_manifest,
+            "split_manifest.json",
+        )
+        if split_error:
+            errors.append(split_error)
+
+        audit_results, audit_error = self._load_validated_json_artifact(
+            artifact_dir / "audit_results.json",
+            validate_audit_results,
+            "audit_results.json",
+        )
+        if audit_error:
+            errors.append(audit_error)
+
+        findings_path = None
+        if require_findings:
+            findings_path, findings_error = self._validate_findings_artifact(artifact_dir)
+            if findings_error:
+                errors.append(findings_error)
+
+        metrics_before_after = None
+        if require_metrics_before_after:
+            metrics_before_after, metrics_error = self._load_validated_json_artifact(
+                artifact_dir / "metrics_before_after.json",
+                validate_metrics_before_after,
+                "metrics_before_after.json",
+            )
+            if metrics_error:
+                errors.append(metrics_error)
+
+        if errors:
+            return None, errors
+
+        return {
+            "artifact_dir": artifact_dir,
+            "dataset_card_path": dataset_card_path,
+            "split_manifest": split_manifest,
+            "audit_results": audit_results,
+            "findings_path": findings_path,
+            "metrics_before_after": metrics_before_after,
+        }, []
+
+    def _evaluate_audit_stage_completion(
+        self, stage: Stage, journal: Journal
+    ) -> tuple[bool, str]:
+        main_stage_number, _main_stage_name, _sub_stage_num, _sub_stage_name = (
+            self.parse_stage_names(stage.name)
+        )
+        best_node = journal.get_best_node(cfg=self.cfg)
+        if not best_node:
+            return False, "No verified audit candidate found yet"
+
+        require_findings = main_stage_number >= 2
+        artifact_bundle, artifact_errors = self._inspect_audit_artifacts(
+            best_node,
+            require_findings=require_findings,
+            require_metrics_before_after=False,
+        )
+        if artifact_errors:
+            return False, "Missing or invalid audit artifacts: " + "; ".join(artifact_errors)
+
+        assert artifact_bundle is not None
+        split_manifest = artifact_bundle["split_manifest"]
+        audit_results = artifact_bundle["audit_results"]
+        assert split_manifest is not None
+        assert audit_results is not None
+
+        manifest_split_names = sorted(split["name"] for split in split_manifest["splits"])
+        benchmark_split_names = sorted(audit_results["benchmark_summary"]["split_names"])
+        dataset_name_matches = (
+            split_manifest["dataset_name"]
+            == audit_results["benchmark_summary"]["dataset_name"]
+        )
+        fingerprint_matches = (
+            split_manifest["provenance"]["dataset_fingerprint"]
+            == audit_results["provenance"]["dataset_fingerprint"]
+        )
+        baseline_validated = (
+            dataset_name_matches
+            and fingerprint_matches
+            and manifest_split_names == benchmark_split_names
+            and audit_results["benchmark_summary"]["record_count"] > 0
+        )
+        if not baseline_validated:
+            return (
+                False,
+                "Baseline validation incomplete: dataset metadata or split inventory does not match",
+            )
+
+        if main_stage_number == 1:
+            return True, "Baseline protocol validated with deterministic dataset artifacts"
+
+        detectors_completed = any(
+            detector_run["status"] == "completed"
+            for detector_run in audit_results["detectors_run"]
+        )
+        if not detectors_completed:
+            return False, "Leakage detectors have not completed successfully"
+
+        findings_summary = audit_results["findings_summary"]
+        confidence = audit_results["confidence"]
+        has_confirmed_finding = (
+            findings_summary["total_findings"] > 0
+            and findings_summary["open_findings"] > 0
+            and len(audit_results["evidence_references"]) > 0
+        )
+        is_high_confidence_clean = (
+            findings_summary["total_findings"] == 0
+            and confidence["overall"] >= HIGH_CONFIDENCE_CLEAN_AUDIT_THRESHOLD
+            and confidence["evidence_coverage"]
+            >= HIGH_CONFIDENCE_COVERAGE_THRESHOLD
+        )
+
+        if main_stage_number == 2:
+            if has_confirmed_finding:
+                return True, "Leakage evidence gathered with at least one confirmed finding"
+            if is_high_confidence_clean:
+                return True, "High-confidence clean audit established from completed detector outputs"
+            return False, "Need a confirmed finding or a high-confidence clean audit"
+
+        if has_confirmed_finding:
+            artifact_bundle, artifact_errors = self._inspect_audit_artifacts(
+                best_node,
+                require_findings=True,
+                require_metrics_before_after=True,
+            )
+            if artifact_errors:
+                return (
+                    False,
+                    "Missing remediation or falsification artifacts: "
+                    + "; ".join(artifact_errors),
+                )
+            assert artifact_bundle is not None
+            metrics_before_after = artifact_bundle["metrics_before_after"]
+            assert metrics_before_after is not None
+            provenance_matches = (
+                metrics_before_after["provenance"]["dataset_fingerprint"]
+                == audit_results["provenance"]["dataset_fingerprint"]
+            )
+            split_manifest_path = Path(
+                metrics_before_after["split_information"]["split_manifest_path"]
+            ).name
+            has_remediation_attempt = (
+                provenance_matches
+                and split_manifest_path == "split_manifest.json"
+                and len(metrics_before_after["deltas"]) > 0
+            )
+            if not has_remediation_attempt:
+                return False, "Remediation or falsification evidence is incomplete"
+            return True, "Confirmed finding backed by remediation or falsification evidence"
+
+        if is_high_confidence_clean:
+            return True, "High-confidence clean audit does not require remediation artifacts"
+
+        return False, "Need a confirmed finding or a high-confidence clean audit"
+
     def _check_stage_completion(self, stage: Stage) -> bool:
         """Check if current stage is complete based on criteria"""
         journal = self.journals[stage.name]
+        if self.is_audit_task:
+            is_complete, reason = self._evaluate_audit_stage_completion(stage, journal)
+            if is_complete:
+                logger.info(f"Stage {stage.name} completed: {reason}")
+                print(f"[green]Stage {stage.name} completed: {reason}[/green]")
+                return True, reason
+
+            if len(journal.nodes) >= stage.max_iterations:
+                failure_reason = (
+                    f"Audit stage {stage.name} failed verification after {stage.max_iterations} iterations: {reason}"
+                )
+                logger.error(failure_reason)
+                print(f"[red]{failure_reason}[/red]")
+                self.current_stage = None
+                return True, failure_reason
+
+            logger.info(f"Stage {stage.name} not complete. {reason}")
+            print(f"[yellow]Stage {stage.name} not complete. {reason}[/yellow]")
+            return False, reason
+
         # Terminate if max iterations reached
         if len(journal.nodes) >= stage.max_iterations:
             logger.info(f"Stage {stage.name} completed: reached max iterations")
@@ -693,7 +1039,9 @@ Your research idea:\n\n
         """Run the experiment through generated stages"""
         while self.current_stage:  # Main stage loop
             main_stage = self.parse_stage_names(self.current_stage.name)[0]
-            print(f"[green]Starting main stage: {main_stage}[/green]")
+            print(
+                f"[green]Starting main stage {main_stage}: {self._get_main_stage_title(main_stage)}[/green]"
+            )
             print(f"[cyan]Goals: {self.current_stage.goals}[/cyan]")
 
             current_substage = self.current_stage
@@ -734,8 +1082,14 @@ Your research idea:\n\n
                             f"[cyan]Feedback from _check_stage_completion: {main_stage_feedback}[/cyan]"
                         )
                         if main_stage_complete:
+                            if self.current_stage is None:
+                                current_substage = None
+                                break
                             # After main stage completion, run multi-seed eval on the best node
-                            if current_substage.stage_number in [1, 2, 3, 4]:
+                            current_main_stage = self.parse_stage_names(
+                                current_substage.name
+                            )[0]
+                            if current_main_stage in [1, 2, 3, 4]:
                                 best_node = self._get_best_implementation(
                                     current_substage.name
                                 )

@@ -3,6 +3,8 @@ from typing import List, Optional, Set, Any, Callable, cast, Dict, Tuple
 import random
 import subprocess
 import os
+import shutil
+import json
 from queue import Queue
 import logging
 import humanize
@@ -22,10 +24,46 @@ from rich import print
 from pathlib import Path
 import base64
 import sys
+import pandas as pd
+
+from ..audits import (
+    validate_audit_results,
+    validate_findings_columns,
+    validate_metrics_before_after,
+    validate_split_manifest,
+)
 
 logger = logging.getLogger("ai-scientist")
 
 ExecCallbackType = Callable[[str, bool], ExecutionResult]
+
+AUDIT_PROMPT_MARKERS = (
+    "Audit Targets:",
+    "Leakage Taxonomy:",
+    "Acceptance Criteria:",
+    "Benchmark Metadata:",
+    "Dataset Context:",
+)
+
+PREFERRED_AUDIT_STACK = (
+    "pandas",
+    "scikit-learn",
+    "duckdb",
+    "rapidfuzz",
+    "pyarrow",
+    "numpy",
+)
+
+REQUIRED_AUDIT_ARTIFACTS = (
+    "audit_results.json",
+    "split_manifest.json",
+    "metrics_before_after.json",
+    "findings.csv or findings.parquet",
+)
+
+
+def is_audit_task_desc(task_desc: str) -> bool:
+    return any(marker in task_desc for marker in AUDIT_PROMPT_MARKERS)
 
 
 def _safe_pickle_test(obj, name="object"):
@@ -269,45 +307,89 @@ class MinimalAgent:
         self.evaluation_metrics = evaluation_metrics
         self.stage_name = stage_name
         self.data_preview = None
+        self.is_audit_task = is_audit_task_desc(task_desc)
 
     @property
     def _prompt_environment(self):
+        if self.is_audit_task:
+            pkg_str = ", ".join(f"`{package}`" for package in PREFERRED_AUDIT_STACK)
+            return {
+                "Preferred Audit Stack": (
+                    f"Prefer deterministic benchmark-audit tooling built from {pkg_str}. "
+                    "Use these libraries first for schema inspection, split analysis, joins, duplicate search, temporal checks, and artifact generation. "
+                    "Do not default to training libraries or GPU-specific tooling unless the benchmark explicitly requires them."
+                )
+            }
+
         pkgs = [
             "numpy",
             "pandas",
             "scikit-learn",
-            "statsmodels",
-            "xgboost",
-            "lightGBM",
-            "torch",
-            "torchvision",
-            "torch-geometric",
-            "bayesian-optimization",
-            "timm",
-            "albumentations",
+            "pyarrow",
+            "duckdb",
+            "rapidfuzz",
+            "datasets",
+            "transformers",
+            "matplotlib",
+            "seaborn",
         ]
         random.shuffle(pkgs)
         pkg_str = ", ".join([f"`{p}`" for p in pkgs])
 
         env_prompt = {
-            "Installed Packages": f"Your solution can use any relevant machine learning packages such as: {pkg_str}. Feel free to use any other packages too (all packages are already installed!). For neural networks we suggest using PyTorch rather than TensorFlow."
+            "Installed Packages": (
+                f"This environment is expected to include common analysis packages such as: {pkg_str}. "
+                "Do not assume arbitrary extra packages are installed beyond the project requirements. "
+                "If your approach depends on an additional library, first verify that it is available or choose an approach that stays within the listed dependencies."
+            )
         }
         return env_prompt
 
     @property
     def _prompt_impl_guideline(self):
+        if self.is_audit_task:
+            artifact_str = ", ".join(f"`{artifact}`" for artifact in REQUIRED_AUDIT_ARTIFACTS)
+            impl_guideline = [
+                "AUDIT MODE REQUIREMENTS:",
+                "  - Treat this as a benchmark leakage audit, not a model-training task.",
+                "  - Schema inspection, split inspection, key analysis, and deterministic exploratory analysis are allowed and encouraged when they support evidence collection.",
+                "  - Prefer pandas, scikit-learn, duckdb, rapidfuzz, and pyarrow for deterministic analysis work.",
+                "  - Do NOT require GPU boilerplate, torch setup, epoch-wise validation loss tracking, or training curves unless the benchmark explicitly depends on them.",
+                "  - Do NOT create synthetic data unless the benchmark instructions explicitly ask for it.",
+                f"  - Emit these required artifacts in the working directory: {artifact_str}.",
+                "  - Keep every emitted artifact deterministic and consistent with the provided benchmark metadata and dataset context.",
+                "Important code structure requirements:",
+                "  - Do NOT put any execution code inside 'if __name__ == \"__main__\":' block",
+                "  - All code should be at the global scope or in functions that are called from the global scope",
+                "  - The script should execute immediately when run, without requiring any special entry point",
+                "The code should start with:",
+                "  import os",
+                "  working_dir = os.path.join(os.getcwd(), 'working')",
+                "  os.makedirs(working_dir, exist_ok=True)",
+                "The code should be a single-file python program that is self-contained and can be executed as-is.",
+                "No parts of the code should be skipped, and the script should finish by writing deterministic audit artifacts.",
+                "Your response should only contain a single code block.",
+                f"Be aware of the running time of the code, it should complete within {humanize.naturaldelta(self.cfg.exec.timeout)}.",
+                'You can also use the "./working" directory to store temporary or intermediate analysis files.',
+                "Artifact writing requirements:",
+                "  - Write JSON artifacts with stable keys and deterministic ordering when possible.",
+                "  - Prefer parquet for findings tables when available; otherwise write CSV with explicit column names.",
+                "  - Preserve provenance and split references across emitted artifacts.",
+            ]
+            return {"Implementation guideline": impl_guideline}
+
         impl_guideline = [
-            "CRITICAL GPU REQUIREMENTS - Your code MUST include ALL of these:",
-            "  - At the start of your code, add these lines to handle GPU/CPU:",
+            "DEVICE HANDLING REQUIREMENTS IF YOU USE PYTORCH:",
+            "  - If you choose a PyTorch-based approach and `torch` is available, add these lines near the start of your code to handle GPU/CPU:",
             "    ```python",
             "    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')",
             "    print(f'Using device: {device}')",
             "    ```",
-            "  - ALWAYS move models to device using the `.to(device)` method",
-            "  - ALWAYS move input tensors to device using the `.to(device)` method",
-            "  - ALWAYS move model related tensors to device using the `.to(device)` method",
-            "  - For optimizers, create them AFTER moving model to device",
-            "  - When using DataLoader, move batch tensors to device in training loop: `batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}`",
+            "  - In that case, ALWAYS move models to device using the `.to(device)` method",
+            "  - In that case, ALWAYS move input tensors to device using the `.to(device)` method",
+            "  - In that case, ALWAYS move model related tensors to device using the `.to(device)` method",
+            "  - In that case, create optimizers AFTER moving the model to device",
+            "  - In that case, move batch tensors to device in the training loop: `batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}`",
             "CRITICAL MODEL INPUT GUIDELINES:",
             "  - Always pay extra attention to the input to the model being properly normalized",
             "  - This is extremely important because the input to the model's forward pass directly affects the output, and the loss function is computed based on the output",
@@ -428,6 +510,15 @@ class MinimalAgent:
 
     @property
     def _prompt_hyperparam_tuning_resp_fmt(self):
+        if self.is_audit_task:
+            return {
+                "Response format": (
+                    "Your response should be a brief outline/sketch of your proposed solution in natural language (3-5 sentences), "
+                    "followed by a single markdown code block (using the format ```python ... ```) which implements the full code for the requested audit step. "
+                    "There should be no additional headings or text in your response. Do not omit any part of the code. "
+                    "Your generated code should be complete and executable."
+                )
+            }
         return {
             "Response format": (
                 "Your response should be a brief outline/sketch of your proposed solution in natural language (3-5 sentences), "
@@ -440,6 +531,15 @@ class MinimalAgent:
 
     @property
     def _prompt_ablation_resp_fmt(self):
+        if self.is_audit_task:
+            return {
+                "Response format": (
+                    "Your response should be a brief outline/sketch of your proposed solution in natural language (3-5 sentences), "
+                    "followed by a single markdown code block (using the format ```python ... ```) which implements the full code for the requested robustness or falsification step. "
+                    "There should be no additional headings or text in your response. Do not omit any part of the code. "
+                    "Your generated code should be complete and executable."
+                )
+            }
         return {
             "Response format": (
                 "Your response should be a brief outline/sketch of your proposed solution in natural language (3-5 sentences), "
@@ -450,7 +550,34 @@ class MinimalAgent:
             )
         }
 
-    def _draft(self) -> Node:
+    def _build_draft_prompt(self) -> Dict[str, Any]:
+        if self.is_audit_task:
+            prompt: Any = {
+                "Introduction": (
+                    "You are an AI researcher conducting a benchmark leakage audit. "
+                    "Your first task is to reproduce the benchmark protocol, validate baseline scoring, inspect the declared splits, "
+                    "and emit deterministic audit artifacts before making any claims. "
+                    "Focus on correctness, provenance, and concrete evidence rather than polished reporting."
+                ),
+                "Research idea": self.task_desc,
+                "Memory": self.memory_summary if self.memory_summary else "",
+                "Instructions": {},
+            }
+            prompt["Instructions"] |= self._prompt_resp_fmt
+            prompt["Instructions"] |= {
+                "Experiment design sketch guideline": [
+                    "This first audit implementation should focus on benchmark reproduction, split validation, and deterministic artifact emission.",
+                    "Take the Memory section into consideration when proposing the design.",
+                    "The solution sketch should be 6-10 sentences.",
+                    "Schema inspection, split inspection, and deterministic exploratory analysis are allowed when they support the audit.",
+                    "Do not create synthetic data unless the benchmark explicitly asks for it.",
+                ],
+                "Evaluation Metric(s)": self.evaluation_metrics,
+            }
+            prompt["Instructions"] |= self._prompt_impl_guideline
+            prompt["Instructions"] |= self._prompt_environment
+            return prompt
+
         prompt: Any = {
             "Introduction": (
                 "You are an AI researcher who is looking to publish a paper that will contribute significantly to the field."
@@ -480,6 +607,10 @@ class MinimalAgent:
 
         if self.cfg.agent.data_preview:
             prompt["Data Overview"] = self.data_preview
+        return prompt
+
+    def _draft(self) -> Node:
+        prompt = self._build_draft_prompt()
 
         print("[cyan]--------------------------------[/cyan]")
         print("[cyan]self.task_desc[/cyan]")
@@ -491,7 +622,30 @@ class MinimalAgent:
         print("MinimalAgent: Draft complete")
         return Node(plan=plan, code=code)
 
-    def _debug(self, parent_node: Node) -> Node:
+    def _build_debug_prompt(self, parent_node: Node) -> Dict[str, Any]:
+        if self.is_audit_task:
+            prompt: Any = {
+                "Introduction": (
+                    "You are an experienced AI researcher debugging a benchmark leakage audit implementation. "
+                    "Based on the information below, revise the code so it produces valid deterministic audit artifacts and sound evidence."
+                ),
+                "Research idea": self.task_desc,
+                "Previous (buggy) implementation": wrap_code(parent_node.code),
+                "Execution output": wrap_code(parent_node.term_out, lang=""),
+                "Feedback based on generated plots": parent_node.vlm_feedback_summary,
+                "Feedback about execution time": parent_node.exec_time_feedback,
+                "Instructions": {},
+            }
+            prompt["Instructions"] |= self._prompt_debug_resp_fmt
+            prompt["Instructions"] |= {
+                "Bugfix improvement sketch guideline": [
+                    "You should write a brief natural language description (3-5 sentences) of how the issue in the previous implementation can be fixed.",
+                    "You may inspect schemas, split boundaries, and artifact contents directly when debugging the audit pipeline.",
+                ],
+            }
+            prompt["Instructions"] |= self._prompt_impl_guideline
+            return prompt
+
         prompt: Any = {
             "Introduction": (
                 "You are an experienced AI researcher. Your previous code for research experiment had a bug, so based on the information below, you should revise it in order to fix this bug. "
@@ -516,11 +670,39 @@ class MinimalAgent:
 
         if self.cfg.agent.data_preview:
             prompt["Data Overview"] = self.data_preview
+        return prompt
 
+    def _debug(self, parent_node: Node) -> Node:
+        prompt = self._build_debug_prompt(parent_node)
         plan, code = self.plan_and_code_query(prompt)
         return Node(plan=plan, code=code, parent=parent_node)
 
-    def _improve(self, parent_node: Node) -> Node:
+    def _build_improve_prompt(self, parent_node: Node) -> Dict[str, Any]:
+        if self.is_audit_task:
+            prompt: Any = {
+                "Introduction": (
+                    "You are an experienced AI researcher. You are provided with a previously developed "
+                    "benchmark leakage audit implementation. Your task is to improve it based on the current audit stage."
+                ),
+                "Research idea": self.task_desc,
+                "Memory": self.memory_summary if self.memory_summary else "",
+                "Feedback based on generated plots": parent_node.vlm_feedback_summary,
+                "Feedback about execution time": parent_node.exec_time_feedback,
+                "Instructions": {},
+            }
+            prompt["Previous solution"] = {
+                "Code": wrap_code(parent_node.code),
+            }
+            prompt["Instructions"] |= self._prompt_resp_fmt
+            prompt["Instructions"] |= {
+                "Audit improvement guideline": [
+                    "Prioritize concrete evidence, deterministic artifacts, and benchmark-protocol correctness.",
+                    "Schema inspection, split inspection, and targeted exploratory analysis are permitted when they support the audit objective.",
+                ]
+            }
+            prompt["Instructions"] |= self._prompt_impl_guideline
+            return prompt
+
         prompt: Any = {
             "Introduction": (
                 "You are an experienced AI researcher. You are provided with a previously developed "
@@ -538,7 +720,10 @@ class MinimalAgent:
 
         prompt["Instructions"] |= self._prompt_resp_fmt
         prompt["Instructions"] |= self._prompt_impl_guideline
+        return prompt
 
+    def _improve(self, parent_node: Node) -> Node:
+        prompt = self._build_improve_prompt(parent_node)
         plan, code = self.plan_and_code_query(prompt)
         return Node(
             plan=plan,
@@ -557,6 +742,35 @@ class MinimalAgent:
     def _generate_hyperparam_tuning_node(
         self, parent_node: Node, hyperparam_idea: HyperparamTuningIdea
     ):
+        if self.is_audit_task:
+            prompt: Any = {
+                "Introduction": (
+                    "You are an experienced AI researcher. You are provided with a previously developed "
+                    "benchmark leakage audit implementation. Your task is to implement the following detector or evidence-gathering step: "
+                    + hyperparam_idea.name
+                    + ". "
+                    + hyperparam_idea.description
+                ),
+                "Base code you are working on": wrap_code(parent_node.code),
+                "Instructions": {},
+            }
+            prompt["Instructions"] |= self._prompt_impl_guideline
+            prompt["Instructions"] |= {
+                "Audit step requirements": [
+                    "Use deterministic analysis steps and preserve provenance in emitted artifacts.",
+                    "Update or emit the required audit artifacts in the working directory.",
+                    "Focus on one concrete detector or evidence-gathering pass for this step.",
+                ]
+            }
+            prompt["Instructions"] |= self._prompt_hyperparam_tuning_resp_fmt
+            plan, code = self.plan_and_code_query(prompt)
+            return Node(
+                plan="Audit step name: " + hyperparam_idea.name + ".\n" + plan,
+                code=code,
+                parent=parent_node,
+                hyperparam_name=hyperparam_idea.name,
+            )
+
         prompt: Any = {
             "Introduction": (
                 "You are an experienced AI researcher. You are provided with a previously developed "
@@ -603,6 +817,35 @@ class MinimalAgent:
         )
 
     def _generate_ablation_node(self, parent_node: Node, ablation_idea: AblationIdea):
+        if self.is_audit_task:
+            prompt: Any = {
+                "Introduction": (
+                    "You are an experienced AI researcher. You are provided with a previously developed "
+                    "benchmark leakage audit implementation. Your task is to implement the following robustness or falsification step: "
+                    + ablation_idea.name
+                    + ". "
+                    + ablation_idea.description
+                ),
+                "Base code you are working on": wrap_code(parent_node.code),
+                "Instructions": {},
+            }
+            prompt["Instructions"] |= self._prompt_impl_guideline
+            prompt["Instructions"] |= {
+                "Robustness step requirements": [
+                    "Focus on robustness checks, falsification, or negative controls rather than model ablations.",
+                    "Use the same benchmark protocol and provenance fields as earlier audit stages.",
+                    "Update or emit the required audit artifacts in the working directory.",
+                ]
+            }
+            prompt["Instructions"] |= self._prompt_ablation_resp_fmt
+            plan, code = self.plan_and_code_query(prompt)
+            return Node(
+                plan="Robustness step name: " + ablation_idea.name + ".\n" + plan,
+                code=code,
+                parent=parent_node,
+                ablation_name=ablation_idea.name,
+            )
+
         prompt: Any = {
             "Introduction": (
                 "You are an experienced AI researcher. You are provided with a previously developed "
@@ -680,13 +923,7 @@ class MinimalAgent:
         print("Final plan + code extraction attempt failed, giving up...")
         return "", completion_text  # type: ignore
 
-    def parse_exec_result(
-        self, node: Node, exec_result: ExecutionResult, workspace: str
-    ):
-        logger.info(f"Agent is parsing execution results for node {node.id}")
-
-        node.absorb_exec_result(exec_result)
-
+    def _review_execution_output(self, node: Node) -> dict[str, Any]:
         prompt = {
             "Introduction": (
                 "You are an experienced AI researcher. "
@@ -698,7 +935,7 @@ class MinimalAgent:
             "Execution output": wrap_code(node.term_out, lang=""),
         }
 
-        response = cast(
+        return cast(
             dict,
             query(
                 system_message=prompt,
@@ -709,13 +946,147 @@ class MinimalAgent:
             ),
         )
 
+    def _find_findings_artifact(self, working_dir: str | Path) -> Path | None:
+        working_dir = Path(working_dir)
+        for candidate in ("findings.parquet", "findings.csv"):
+            candidate_path = working_dir / candidate
+            if candidate_path.exists():
+                return candidate_path
+        return None
+
+    def _validate_audit_artifacts(
+        self, working_dir: str | Path
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        working_dir = Path(working_dir)
+        audit_results_path = working_dir / "audit_results.json"
+        if not audit_results_path.exists():
+            return None, "Missing required audit artifact: audit_results.json"
+
+        try:
+            audit_results = json.loads(audit_results_path.read_text())
+            validate_audit_results(audit_results)
+        except Exception as exc:
+            return None, f"Invalid audit_results.json: {exc}"
+
+        split_manifest_path = working_dir / "split_manifest.json"
+        if not split_manifest_path.exists():
+            return None, "Missing required audit artifact: split_manifest.json"
+        try:
+            split_manifest = json.loads(split_manifest_path.read_text())
+            validate_split_manifest(split_manifest)
+        except Exception as exc:
+            return None, f"Invalid split_manifest.json: {exc}"
+
+        findings_path = self._find_findings_artifact(working_dir)
+        if findings_path is None:
+            return None, "Missing required audit artifact: findings.csv or findings.parquet"
+        try:
+            if findings_path.suffix == ".parquet":
+                findings = pd.read_parquet(findings_path)
+            else:
+                findings = pd.read_csv(findings_path)
+            validate_findings_columns(findings.columns)
+        except Exception as exc:
+            return None, f"Invalid findings artifact: {exc}"
+
+        metrics_before_after_path = working_dir / "metrics_before_after.json"
+        metrics_before_after = None
+        if metrics_before_after_path.exists():
+            try:
+                metrics_before_after = json.loads(metrics_before_after_path.read_text())
+                validate_metrics_before_after(metrics_before_after)
+            except Exception as exc:
+                return None, f"Invalid metrics_before_after.json: {exc}"
+
+        return {
+            "audit_results_path": audit_results_path,
+            "audit_results": audit_results,
+            "split_manifest_path": split_manifest_path,
+            "split_manifest": split_manifest,
+            "findings_path": findings_path,
+            "findings": findings,
+            "metrics_before_after_path": (
+                metrics_before_after_path if metrics_before_after_path.exists() else None
+            ),
+            "metrics_before_after": metrics_before_after,
+        }, None
+
+    def _summarize_audit_artifacts(self, artifact_bundle: Mapping[str, Any]) -> str:
+        audit_results = artifact_bundle["audit_results"]
+        findings = artifact_bundle["findings"]
+        findings_summary = audit_results["findings_summary"]
+        confidence = audit_results["confidence"]
+        audit_score = audit_results["audit_score"]
+        return (
+            "Structured audit summary: "
+            f"{findings_summary['total_findings']} total findings "
+            f"({findings_summary['open_findings']} open) across "
+            f"{len(audit_results['detectors_run'])} detector runs; "
+            f"audit score {audit_score['value']} / {audit_score['max_value']} ({audit_score['rating']}); "
+            f"confidence {confidence['overall']:.2f} with evidence coverage {confidence['evidence_coverage']:.2f}; "
+            f"findings artifact `{artifact_bundle['findings_path'].name}` has {len(findings)} row(s)."
+        )
+
+    def _copy_audit_artifacts(self, working_dir: str | Path, exp_results_dir: str | Path) -> None:
+        working_dir = Path(working_dir)
+        exp_results_dir = Path(exp_results_dir)
+        for pattern in ("*.json", "*.csv", "*.parquet", "*.md"):
+            for source_path in working_dir.glob(pattern):
+                destination_path = exp_results_dir / source_path.name
+                shutil.copy2(source_path, destination_path)
+
+    def parse_exec_result(
+        self, node: Node, exec_result: ExecutionResult, workspace: str
+    ) -> bool:
+        logger.info(f"Agent is parsing execution results for node {node.id}")
+
+        node.absorb_exec_result(exec_result)
+        if self.is_audit_task:
+            artifact_bundle, artifact_error = self._validate_audit_artifacts(workspace)
+            if artifact_bundle is not None:
+                audit_results = artifact_bundle["audit_results"]
+                status = audit_results["run_metadata"]["status"]
+                if status != "completed":
+                    node.analysis = (
+                        f"Structured audit artifact is present but run status is `{status}`; node is rejected."
+                    )
+                    node.metric = WorstMetricValue()
+                    node.is_buggy = True
+                    return True
+
+                node.analysis = self._summarize_audit_artifacts(artifact_bundle)
+                node.metric = MetricValue(
+                    value=audit_results["audit_score"]["value"],
+                    maximize=True,
+                    name="audit_score",
+                    description="Deterministic audit branch score from audit_results.json",
+                )
+                node.is_buggy = node.exc_type is not None
+                return True
+
+            fallback_summary = ""
+            if artifact_error == "Missing required audit artifact: audit_results.json":
+                try:
+                    response = self._review_execution_output(node)
+                    fallback_summary = response["summary"]
+                except Exception as exc:
+                    fallback_summary = f"Fallback execution review failed: {exc}"
+
+            node.analysis = (
+                artifact_error
+                if not fallback_summary
+                else artifact_error + "\nFallback review: " + fallback_summary
+            )
+            node.metric = WorstMetricValue()
+            node.is_buggy = True
+            return True
+
+        response = self._review_execution_output(node)
         node.analysis = response["summary"]
         node.is_buggy = response["is_bug"] or node.exc_type is not None
-        print(
-            "[red]Checking if response contains metric name and description[/red]",
-            flush=True,
-        )
+        print("[red]Checking if response contains metric name and description[/red]", flush=True)
         print(response)
+        return False
 
     def _generate_plotting_code(
         self, node: Node, working_dir: str, plot_code_from_prev_stage: str = None
@@ -1155,6 +1526,7 @@ class ParallelAgent:
         self.cfg = cfg
         self.journal = journal
         self.stage_name = stage_name
+        self.is_audit_task = is_audit_task_desc(task_desc)
         self.best_stage3_node = (
             best_stage3_node  # to initialize ablation stuides (stage 4)
         )
@@ -1527,13 +1899,17 @@ class ParallelAgent:
             process_interpreter.cleanup_session()
 
             print("Parsing execution results")
-            worker_agent.parse_exec_result(
+            artifact_parse_final = worker_agent.parse_exec_result(
                 node=child_node, exec_result=exec_result, workspace=working_dir
             )
 
             # Add check for saved data files
             data_files = [f for f in os.listdir(working_dir) if f.endswith(".npy")]
-            if not data_files:
+            if artifact_parse_final:
+                logger.info(
+                    "Skipping legacy metric parsing because audit artifact parsing already finalized the node."
+                )
+            elif not data_files:
                 logger.warning(
                     "No .npy files found in working directory. Data may not have been saved properly."
                 )
@@ -1742,6 +2118,11 @@ class ParallelAgent:
                             exp_data_file.resolve().rename(exp_data_path)
                             logger.info(f"Saved experiment data to {exp_data_path}")
 
+                        if worker_agent.is_audit_task:
+                            worker_agent._copy_audit_artifacts(
+                                working_dir, exp_results_dir
+                            )
+
                         for plot_file in plots_dir.glob("*.png"):
                             # Get the base directory (parent of workspaces/logs)
                             base_dir = Path(cfg.workspace_dir).parent.parent
@@ -1800,6 +2181,60 @@ class ParallelAgent:
         This is minaly for Stage 2 (baseline tuning).
         """
         tried = list(self._hyperparam_tuning_state["tried_hyperparams"])
+
+        if self.is_audit_task:
+            audit_step_prompt = {
+                "Introduction": (
+                    "You are an AI researcher conducting stage 2 of a benchmark leakage audit. "
+                    "Based on the current implementation and previous evidence-gathering attempts (if any), "
+                    "propose ONE new deterministic detector or evidence-gathering step."
+                ),
+                "Base code you are working on": wrap_code(self.best_stage1_node.code),
+                "Previous Audit Steps": {
+                    "Has been tried": tried if tried else "Nothing has been tried yet.",
+                },
+                "Instructions": {
+                    "Requirements": [
+                        "1. Identify ONE specific detector, split check, or evidence-gathering step",
+                        "2. Ensure the step is different from previous attempts",
+                        "3. Focus on concrete evidence rather than model optimization",
+                    ]
+                },
+                "Response format": (
+                    "Your response should start with 'AUDIT STEP NAME: <step name>' on the first line."
+                    "The second line should start with 'DESCRIPTION: <description>', a brief description of the audit step and why it improves evidence coverage (3-5 sentences)."
+                ),
+            }
+
+            retry_count = 0
+            retry_limit = 5
+            while retry_count < retry_limit:
+                response = query(
+                    system_message=audit_step_prompt,
+                    user_message=None,
+                    model=self.cfg.agent.code.model,
+                    temperature=self.cfg.agent.code.temp,
+                )
+                step_name, step_description = _parse_keyword_prefix_response(
+                    response, "AUDIT STEP NAME:", "DESCRIPTION:"
+                )
+                if step_name and step_description:
+                    return HyperparamTuningIdea(
+                        name=step_name, description=step_description
+                    )
+
+                retry_count += 1
+                logger.warning(
+                    f"Failed to parse audit step response (attempt {retry_count}/{retry_limit})"
+                )
+
+            logger.error(
+                f"Failed to parse audit step response after {retry_limit} retries. Falling back to exact duplicate scan."
+            )
+            return HyperparamTuningIdea(
+                name="Exact Duplicate Scan",
+                description="Run a deterministic exact-duplicate check across benchmark splits and write evidence-backed audit artifacts.",
+            )
 
         hyperparam_tuning_prompt = {
             "Introduction": (
@@ -1862,6 +2297,60 @@ class ParallelAgent:
 
         # Prepare context of what's been tried
         completed = list(self._ablation_state["completed_ablations"])
+
+        if self.is_audit_task:
+            robustness_prompt = {
+                "Introduction": (
+                    "You are an AI researcher conducting stage 4 of a benchmark leakage audit. "
+                    "Based on the current implementation and previous robustness checks (if any), "
+                    "propose ONE new robustness, falsification, or negative-control step."
+                ),
+                "Base code you are working on": wrap_code(self.best_stage3_node.code),
+                "Previous Robustness Checks": {
+                    "Has been tried": (
+                        completed if completed else "Nothing has been tried yet."
+                    ),
+                },
+                "Instructions": {
+                    "Requirements": [
+                        "1. Identify ONE specific robustness, falsification, or negative-control step",
+                        "2. Ensure the step is different from previous completed or running attempts",
+                        "3. Focus on stress-testing the audit claim rather than proposing new model features",
+                    ]
+                },
+                "Response format": (
+                    "Your response should start with 'ROBUSTNESS CHECK NAME: <name>' on the first line."
+                    "The second line should start with 'DESCRIPTION: <description>', a brief description of the robustness or falsification step and why it matters (3-5 sentences)."
+                ),
+            }
+
+            retry_count = 0
+            retry_limit = 5
+            while retry_count < retry_limit:
+                response = query(
+                    system_message=robustness_prompt,
+                    user_message=None,
+                    model=self.cfg.agent.code.model,
+                    temperature=self.cfg.agent.code.temp,
+                )
+                check_name, check_description = _parse_keyword_prefix_response(
+                    response, "ROBUSTNESS CHECK NAME:", "DESCRIPTION:"
+                )
+                if check_name and check_description:
+                    return AblationIdea(name=check_name, description=check_description)
+
+                retry_count += 1
+                logger.warning(
+                    f"Failed to parse robustness response (attempt {retry_count}/{retry_limit})"
+                )
+
+            logger.error(
+                f"Failed to parse robustness response after {retry_limit} retries. Falling back to temporal negative control."
+            )
+            return AblationIdea(
+                name="Temporal Negative Control",
+                description="Run a deterministic temporal-order negative control to test whether the leakage claim survives a stricter split boundary.",
+            )
 
         ablation_prompt = {
             "Introduction": (
@@ -2036,7 +2525,7 @@ class ParallelAgent:
                     continue
 
                 # If we can't use best node (tree already processed), try next best nodes
-                for node in sorted(good_nodes, key=lambda n: n.metric, reverse=True):
+                for node in self.journal.get_ranked_nodes():
                     tree_root = node
                     while tree_root.parent:
                         tree_root = tree_root.parent

@@ -255,6 +255,8 @@ def perform_experiments_bfts(config_path: str):
         print(f"- Research summary: {research_summary_path}")
         print(f"- Ablation summary: {ablation_summary_path}")
 
+    return manager
+
 
 if __name__ == "__main__":
     cfg_path = "treesearch/utils/config.yaml"

@@ -4,6 +4,19 @@ import shutil
 import yaml
 
 
+def _deep_update(base: dict, overrides: dict) -> dict:
+    """Recursively merge override values into a config dictionary."""
+    for key, value in overrides.items():
+        if (
+            isinstance(value, dict)
+            and isinstance(base.get(key), dict)
+        ):
+            _deep_update(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
 def idea_to_markdown(data: dict, output_path: str, load_code: str) -> None:
     """
     Convert a dictionary into a markdown file.
@@ -42,7 +55,12 @@ def idea_to_markdown(data: dict, output_path: str, load_code: str) -> None:
                 f.write(f"```python\n{code}\n```\n\n")
 
 
-def edit_bfts_config_file(config_path: str, idea_dir: str, idea_path: str) -> str:
+def edit_bfts_config_file(
+    config_path: str,
+    idea_dir: str,
+    idea_path: str,
+    config_overrides: dict | None = None,
+) -> str:
     """
     Edit the bfts_config.yaml file to point to the idea.md file
 
@@ -50,6 +68,7 @@ def edit_bfts_config_file(config_path: str, idea_dir: str, idea_path: str) -> st
         config_path: Path to the bfts_config.yaml file
         idea_dir: Directory where the idea.md file is located
         idea_path: Path to the idea.md file
+        config_overrides: Optional nested overrides to apply to the copied config
 
     Returns:
         Path to the edited bfts_config.yaml file
@@ -70,6 +89,9 @@ def edit_bfts_config_file(config_path: str, idea_dir: str, idea_path: str) -> st
     log_dir = osp.join(idea_dir, "logs")
     os.makedirs(log_dir, exist_ok=True)
     config["log_dir"] = log_dir
+
+    if config_overrides:
+        config = _deep_update(config, config_overrides)
 
     with open(run_config_path, "w") as f:
         yaml.dump(config, f)
