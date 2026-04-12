@@ -268,14 +268,14 @@ def generate_temp_free_idea(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Generate AI scientist proposals - template free"
+        description="Generate AI-bench-auditor proposals - template free"
     )
     parser.add_argument(
         "--model",
         type=str,
         default="gpt-4o-2024-05-13",
         choices=AVAILABLE_LLMS,
-        help="Model to use for AI Scientist.",
+        help="Model to use for AI-bench-auditor ideation.",
     )
     parser.add_argument(
         "--max-num-generations",

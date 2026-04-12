@@ -591,7 +591,7 @@ def _render_paper_tex(
         r"\usepackage{natbib}" "\n"
         r"\usepackage{longtable}" "\n"
         r"\title{" + _latex_escape(title) + "}\n"
-        r"\author{AI Scientist v2 Audit Workflow}" "\n"
+        r"\author{AI-bench-auditor Audit Workflow}" "\n"
         r"\date{}" "\n"
         r"\begin{document}" "\n"
         r"\maketitle" "\n"

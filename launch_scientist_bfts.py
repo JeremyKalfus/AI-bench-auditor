@@ -45,7 +45,7 @@ def save_token_tracker(idea_dir):
 
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(
-        description="Run AI Scientist in explicit audit or paper mode."
+        description="Run AI-bench-auditor in explicit audit or paper mode."
     )
     parser.add_argument(
         "--mode",

@@ -2,7 +2,7 @@
 
 ## Context
 
-We want to build a benchmark leakage auditing system on top of `AI Scientist v2` that:
+We want to build `AI-bench-auditor`, a benchmark leakage auditing system built on top of `AI Scientist v2`, that:
 
 - runs on a CPU-first machine, including Apple Silicon Macs
 - uses agentic tree search where that search is genuinely useful
