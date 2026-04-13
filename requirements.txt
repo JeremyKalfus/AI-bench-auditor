@@ -34,3 +34,4 @@ omegaconf
 botocore
 boto3
 psutil
+requests

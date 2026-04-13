@@ -171,6 +171,19 @@ Run the deterministic verification stack:
   --output-dir verification_results/latest
 ```
 
+Scout public benchmark candidates:
+
+```bash
+.venv-benchmark-audit/bin/python -m ai_scientist.discover_benchmarks \
+  --topic "reasoning LLM benchmarks" \
+  --output-dir benchmark_discovery/reasoning_llms
+```
+
+This discovery tool searches broadly across Semantic Scholar and Hugging Face datasets, writes
+`benchmark_discovery_results.json` plus `benchmark_discovery_report.md`, and emits draft
+single-candidate spec files under `specs/`. Those specs are intentionally review-first: they keep
+`Benchmark Metadata.files` empty until you stage local benchmark files for a real audit run.
+
 What the verification stack covers:
 
 - schema gating for generated audit bundles and summary artifacts
