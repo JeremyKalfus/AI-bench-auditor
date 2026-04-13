@@ -1,6 +1,6 @@
 # AI-bench-auditor
 
-AI-bench-auditor is a benchmark leakage auditing workflow built on top of the AI Scientist v2 codebase and its agentic tree-search spine. The product surface is audit-first: it generates a research plan, requires a human approval gate before any audit execution begins, produces deterministic audit artifacts, reviews the final audit report automatically, and then packages the validated run as a LaTeX paper source bundle with real figures, tables, and citations.
+AI-bench-auditor is a benchmark leakage auditing workflow built on top of the AI Scientist v2 codebase and its agentic tree-search spine. The product surface is audit-first: it generates a research plan, requires a human approval gate before any audit execution begins, produces deterministic audit artifacts, reviews the final audit report automatically, and only then packages the validated run as a LaTeX paper source bundle with real figures, tables, and citations after the verification stack gate passes.
 
 The repository still uses the internal Python package path `ai_scientist` for compatibility with the upstream codebase. The intended user-facing workflow, CLI, and documentation in this repository are for AI-bench-auditor.
 
@@ -17,13 +17,13 @@ Core workflow:
 5. Validate primary audit artifacts.
 6. Generate `audit_report.md`.
 7. Run an automated audit-report review against real artifacts.
-8. Build a LaTeX paper source bundle and optional PDF.
+8. Build a LaTeX paper source bundle and optional PDF, but only when the Phase 12 paper-generation gate passes.
 9. Stop with no additional human checkpoint after plan approval.
 
 The system is intentionally conservative:
 
 - It does not allow research to begin when plan review is required and approval is missing.
-- It does not allow paper generation from invalid audit artifacts.
+- It does not allow paper generation from invalid audit artifacts or a failing verification-stack gate.
 - It does not fabricate citations, figures, or artifact-backed claims.
 - It prefers deterministic artifacts over LLM prose whenever both exist.
 
@@ -105,6 +105,7 @@ Useful flags:
 - `--allow-source-only`
 - `--citation-mode {auto,provided,off}`
 - `--references-file PATH`
+- `--verification-stack-results PATH`
 
 Behavioral contract:
 
@@ -120,6 +121,7 @@ The paper stage is audit-native, not the old generic AI Scientist paper path.
 The manuscript builder:
 
 - consumes validated audit artifacts plus the reviewed audit report
+- requires a passed `verification_stack_results.json` summary before paper mode can proceed
 - derives figures and tables from real artifact files
 - emits an evidence map in the appendix
 - fails rather than inventing references when citations cannot be resolved honestly
@@ -127,15 +129,18 @@ The manuscript builder:
 
 If PDF compilation is requested and fails, the run exits nonzero unless `--allow-source-only` is explicitly set.
 
+By default, paper mode looks for `verification_results/latest/verification_stack_results.json` under the repo root. Use `--verification-stack-results PATH` to point the gate at a different verification run summary.
+
 ## Current Scope
 
 This repository now supports:
 
 - a required pre-research human plan-review gate
 - automated post-audit report review
-- automated LaTeX source bundle generation after a validated audit run
+- automated LaTeX source bundle generation after a validated audit run and a passed verification-stack gate
+- a deterministic Phase 11 verification stack with schema gating, canaries, mutation tests, search ablations, reproducibility summaries, and acceptance checks over checked-in verification benchmarks
 
-This repository does not yet claim final empirical validation of every target benchmark workflow. The previously identified Phase 11 blocker remains separate: the repo still needs real benchmark directories plus the mutation, ablation, reproducibility, and acceptance harnesses needed for full benchmark-proven validation.
+This repository still does not claim final empirical validation of every external benchmark workflow. The self-contained Phase 11 harness lives in `ai_scientist.audits.verification` and uses tiny checked-in deterministic fixtures under `tests/fixtures/verification/`; real external benchmarks should be staged outside tracked source trees, with generated run outputs kept outside the repo’s tracked surface as well.
 
 ## Repository Notes
 
@@ -147,6 +152,9 @@ This repository does not yet claim final empirical validation of every target be
 
 - Revised implementation plan: [docs/benchmark_audit_revised_plan.md](docs/benchmark_audit_revised_plan.md)
 - Execution log: [docs/benchmark_audit_execution_log.md](docs/benchmark_audit_execution_log.md)
+- Verification stack guide: [docs/verification_stack.md](docs/verification_stack.md)
+- Real-benchmark artifact inspection memo: [docs/artifact_inspection_real_benchmark.md](docs/artifact_inspection_real_benchmark.md)
+- Phase 12 kickoff note: [docs/phase12_kickoff_note.md](docs/phase12_kickoff_note.md)
 
 ## Acknowledgements
 

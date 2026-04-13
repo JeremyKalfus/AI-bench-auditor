@@ -1,0 +1,4 @@
+customer_id,event_time,text,label,feature
+c201,2024-03-10,Cancellation survey requested by finance team,0,0.19
+c202,2024-03-11,Support asked for feature walkthrough recording,1,0.33
+c203,2024-03-12,Contract review scheduled before renewal date,0,0.41

@@ -1,0 +1,62 @@
+{
+  "baseline_metrics": [
+    {
+      "higher_is_better": true,
+      "metric_name": "accuracy",
+      "split": "test",
+      "value": 0.93
+    }
+  ],
+  "benchmark_id": "support_ticket_overlap",
+  "benchmark_name": "Support Ticket Overlap",
+  "candidate_key_columns": [
+    "customer_id"
+  ],
+  "dataset_name": "support-ticket-overlap",
+  "description": "Support-ticket benchmark fixture with a shared customer entity and near-duplicate ticket text across train and test.",
+  "expected_issue_detectors": [
+    "group_overlap",
+    "near_duplicate"
+  ],
+  "files": [
+    {
+      "path": "input/train.csv",
+      "split": "train"
+    },
+    {
+      "path": "input/test.csv",
+      "split": "test"
+    }
+  ],
+  "known_or_suspected_issues": [
+    {
+      "description": "A customer entity appears in both train and test.",
+      "detector": "group_overlap",
+      "status": "known"
+    },
+    {
+      "description": "Password-reset ticket phrasing is semantically repeated across the split boundary.",
+      "detector": "near_duplicate",
+      "status": "suspected"
+    }
+  ],
+  "metrics_notes": "The remediated score drops once the overlapping customer thread is removed from evaluation.",
+  "near_duplicate_similarity_threshold": 90,
+  "remediated_metrics": [
+    {
+      "higher_is_better": true,
+      "metric_name": "accuracy",
+      "split": "test",
+      "value": 0.84
+    }
+  ],
+  "role": "acceptance",
+  "schema_version": "0.1.0",
+  "target_column": "label",
+  "text_columns": [
+    "text"
+  ],
+  "timestamp_columns": [
+    "event_time"
+  ]
+}

@@ -1,0 +1,4 @@
+customer_id,event_time,text,label,feature
+c101,2024-03-01,Monthly subscription renewed after retention email,0,0.12
+c102,2024-03-02,Account stayed active following onboarding call,1,0.27
+c103,2024-03-03,Customer expanded seats after usage milestone,1,0.49

@@ -27,6 +27,11 @@ from .schema import (
     validate_provenance_block,
     validate_split_manifest,
 )
+from .verification import (
+    load_verification_benchmark,
+    materialize_verification_audit_bundle,
+    run_verification_stack,
+)
 
 __all__ = [
     "FindingScoreInput",
@@ -49,6 +54,9 @@ __all__ = [
     "build_provenance_block",
     "build_example_split_manifest",
     "load_canary_suite",
+    "load_verification_benchmark",
+    "materialize_verification_audit_bundle",
+    "run_verification_stack",
     "score_branch",
     "validate_audit_results",
     "validate_findings_columns",

@@ -1,0 +1,4 @@
+account_id,event_time,text,label,feature,label_proxy
+acc_101,2024-06-10,Late payment flag after refinancing review,1,0.61,1
+acc_102,2024-06-11,Credit utilization climbed after limit reduction,0,0.48,0
+acc_103,2024-06-12,Collection note opened after hardship request,1,0.73,1

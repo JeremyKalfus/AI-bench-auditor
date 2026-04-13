@@ -5,6 +5,7 @@ import types
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from ai_scientist.audits import manuscript as manuscript_module
 from tests.audit_fixture_utils import (
@@ -59,6 +60,37 @@ def write_benchmark_idea(ideas_path: Path, train_path: Path, test_path: Path) ->
     )
 
 
+def write_verification_stack_results(
+    path: Path,
+    *,
+    status: str = "passed",
+    ablation_passed: bool = True,
+    full_tree_search_adds_value: bool = True,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "status": status,
+                "phases": {
+                    "canary": {"summary": {"passed": True}},
+                    "mutation": {"summary": {"passed": True}},
+                    "ablation": {
+                        "summary": {
+                            "passed": ablation_passed,
+                            "full_tree_search_adds_value": full_tree_search_adds_value,
+                        }
+                    },
+                    "reproducibility": {"summary": {"passed": True}},
+                    "acceptance": {"summary": {"passed": True}},
+                    "schema_gate": {"passed": True},
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
 def test_audit_single_command_flow_runs_with_one_pre_research_gate(
     tmp_path, monkeypatch
 ):
@@ -81,7 +113,9 @@ def test_audit_single_command_flow_runs_with_one_pre_research_gate(
     write_benchmark_idea(ideas_path, train_path, test_path)
     run_dir = tmp_path / "single-command-run"
     references_path = tmp_path / "references.bib"
+    verification_results_path = tmp_path / "verification_stack_results.json"
     write_references_bib(references_path)
+    write_verification_stack_results(verification_results_path)
 
     input_calls = {"count": 0}
 
@@ -146,6 +180,8 @@ def test_audit_single_command_flow_runs_with_one_pre_research_gate(
             "provided",
             "--references-file",
             str(references_path),
+            "--verification-stack-results",
+            str(verification_results_path),
         ]
     )
 
@@ -162,6 +198,23 @@ def test_audit_single_command_flow_runs_with_one_pre_research_gate(
     assert (run_dir / "paper" / "paper.tex").exists()
     assert (run_dir / "paper" / "paper_manifest.json").exists()
     assert (run_dir / "paper_bundle.zip").exists()
+
+
+def test_paper_generation_preconditions_block_when_tree_search_gate_fails(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    launcher = load_launcher(repo_root)
+    verification_results_path = tmp_path / "verification_stack_results.json"
+    write_verification_stack_results(
+        verification_results_path,
+        status="failed",
+        ablation_passed=False,
+        full_tree_search_adds_value=False,
+    )
+
+    with pytest.raises(
+        ValueError, match="search ablation does not show tree search adds value"
+    ):
+        launcher.ensure_paper_generation_preconditions(verification_results_path)
 
 
 def test_unapproved_plan_stops_before_research_starts(tmp_path, monkeypatch):

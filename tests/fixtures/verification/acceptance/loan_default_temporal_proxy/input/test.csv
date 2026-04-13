@@ -1,0 +1,4 @@
+account_id,event_time,text,label,feature,label_proxy
+acc_201,2024-05-01,Baseline application scored within expected range,0,0.22,0
+acc_202,2024-05-02,Income verification completed without exception,1,0.29,1
+acc_203,2024-05-03,Manual underwriter review cleared the account,0,0.31,0

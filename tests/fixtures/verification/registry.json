@@ -1,0 +1,20 @@
+{
+  "benchmarks": [
+    {
+      "benchmark_id": "support_ticket_overlap",
+      "relative_path": "acceptance/support_ticket_overlap",
+      "role": "acceptance"
+    },
+    {
+      "benchmark_id": "loan_default_temporal_proxy",
+      "relative_path": "acceptance/loan_default_temporal_proxy",
+      "role": "acceptance"
+    },
+    {
+      "benchmark_id": "clean_customer_churn",
+      "relative_path": "mutation/clean_customer_churn",
+      "role": "mutation_base"
+    }
+  ],
+  "schema_version": "0.1.0"
+}

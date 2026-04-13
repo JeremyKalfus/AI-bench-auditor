@@ -41,6 +41,11 @@ def empty_findings_dataframe() -> pd.DataFrame:
 def _coerce_jsonable(value: Any) -> Any:
     if pd.isna(value):
         return None
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except (ValueError, TypeError):
+            pass
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
     return value

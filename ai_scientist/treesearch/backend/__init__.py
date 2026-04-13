@@ -1,4 +1,4 @@
-from . import backend_anthropic, backend_openai
+from . import backend_anthropic, backend_codex_cli, backend_openai
 from .utils import FunctionSpec, OutputType, PromptType, compile_prompt_to_md
 
 def get_ai_client(model: str, **model_kwargs):
@@ -11,6 +11,8 @@ def get_ai_client(model: str, **model_kwargs):
     Returns:
         An instance of the appropriate AI client.
     """
+    if model.startswith("codex-cli/"):
+        return backend_codex_cli.get_ai_client(model=model, **model_kwargs)
     if "claude-" in model:
         return backend_anthropic.get_ai_client(model=model, **model_kwargs)
     else:
@@ -66,7 +68,10 @@ def query(
     else:
         model_kwargs["max_tokens"] = max_tokens
 
-    query_func = backend_anthropic.query if "claude-" in model else backend_openai.query
+    if model.startswith("codex-cli/"):
+        query_func = backend_codex_cli.query
+    else:
+        query_func = backend_anthropic.query if "claude-" in model else backend_openai.query
     output, req_time, in_tok_count, out_tok_count, info = query_func(
         system_message=compile_prompt_to_md(system_message) if system_message else None,
         user_message=compile_prompt_to_md(user_message) if user_message else None,

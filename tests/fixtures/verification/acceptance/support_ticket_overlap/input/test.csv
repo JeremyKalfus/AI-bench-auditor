@@ -1,0 +1,4 @@
+ticket_id,customer_id,event_time,text,label,feature
+tt1,cust_004,2024-01-10,New account onboarding checklist question,0,0.18
+tt2,cust_002,2024-01-11,Reset password request for billing portal access today,0,0.37
+tt3,cust_005,2024-01-12,Downgrade inquiry for seasonal team license,1,0.47

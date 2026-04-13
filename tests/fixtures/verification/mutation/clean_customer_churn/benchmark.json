@@ -1,0 +1,29 @@
+{
+  "benchmark_id": "clean_customer_churn",
+  "benchmark_name": "Clean Customer Churn",
+  "candidate_key_columns": [
+    "customer_id"
+  ],
+  "dataset_name": "clean-customer-churn",
+  "description": "Clean benchmark fixture used as the base dataset for single-mode mutation testing.",
+  "expected_issue_detectors": [],
+  "files": [
+    {
+      "path": "input/train.csv",
+      "split": "train"
+    },
+    {
+      "path": "input/test.csv",
+      "split": "test"
+    }
+  ],
+  "role": "mutation_base",
+  "schema_version": "0.1.0",
+  "target_column": "label",
+  "text_columns": [
+    "text"
+  ],
+  "timestamp_columns": [
+    "event_time"
+  ]
+}

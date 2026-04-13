@@ -193,6 +193,15 @@ def parse_arguments(argv=None):
         help="Optional BibTeX file used by the audit-native manuscript stage.",
     )
     parser.add_argument(
+        "--verification-stack-results",
+        type=str,
+        default=None,
+        help=(
+            "Path to verification_stack_results.json used to gate paper generation. "
+            "Defaults to verification_results/latest/verification_stack_results.json under the repo root."
+        ),
+    )
+    parser.add_argument(
         "--writeup-retries",
         type=int,
         default=3,
@@ -714,6 +723,57 @@ def _resolve_run_artifact_dir(run_dir: str | Path) -> Path:
     )
 
 
+def _default_verification_stack_results_path() -> Path:
+    return (
+        Path(__file__).resolve().parent
+        / "verification_results"
+        / "latest"
+        / "verification_stack_results.json"
+    )
+
+
+def ensure_paper_generation_preconditions(
+    verification_stack_results_path: str | Path | None,
+) -> dict:
+    results_path = (
+        Path(verification_stack_results_path).expanduser().resolve()
+        if verification_stack_results_path
+        else _default_verification_stack_results_path().resolve()
+    )
+    if not results_path.exists():
+        raise ValueError(
+            "paper generation is blocked until Phase 12.1 preconditions pass; "
+            f"missing verification stack summary at {results_path}"
+        )
+
+    verification = json.loads(results_path.read_text())
+    phases = verification.get("phases", {})
+    ablation_summary = phases.get("ablation", {}).get("summary", {})
+    failures = []
+    if verification.get("status") != "passed":
+        failures.append("overall verification stack status is not `passed`")
+    if not phases.get("schema_gate", {}).get("passed"):
+        failures.append("schema gate has not passed")
+    if not phases.get("canary", {}).get("summary", {}).get("passed"):
+        failures.append("canary suite has not passed")
+    if not phases.get("mutation", {}).get("summary", {}).get("passed"):
+        failures.append("mutation thresholds have not passed")
+    if not ablation_summary.get("passed"):
+        failures.append("search ablation has not passed")
+    if not ablation_summary.get("full_tree_search_adds_value"):
+        failures.append("search ablation does not show tree search adds value")
+    if not phases.get("reproducibility", {}).get("summary", {}).get("passed"):
+        failures.append("reproducibility has not passed")
+
+    if failures:
+        raise ValueError(
+            "paper generation is blocked until Phase 12.1 preconditions pass: "
+            + "; ".join(failures)
+            + f". See {results_path}"
+        )
+    return {"path": str(results_path), "verification": verification}
+
+
 def run_post_audit_review_and_paper(
     *,
     run_dir: str,
@@ -739,6 +799,9 @@ def run_post_audit_review_and_paper(
     if getattr(args, "paper_mode", "on_success") == "off":
         return review
 
+    ensure_paper_generation_preconditions(
+        getattr(args, "verification_stack_results", None)
+    )
     build_audit_manuscript_bundle(
         run_dir=run_dir,
         artifact_dir=artifact_dir,

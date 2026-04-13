@@ -1,0 +1,61 @@
+{
+  "baseline_metrics": [
+    {
+      "higher_is_better": true,
+      "metric_name": "roc_auc",
+      "split": "test",
+      "value": 0.91
+    }
+  ],
+  "benchmark_id": "loan_default_temporal_proxy",
+  "benchmark_name": "Loan Default Temporal Proxy",
+  "candidate_key_columns": [
+    "account_id"
+  ],
+  "dataset_name": "loan-default-temporal-proxy",
+  "description": "Loan-default benchmark fixture with future-dated training rows and a label-copy feature in both splits.",
+  "expected_issue_detectors": [
+    "temporal_leakage",
+    "suspicious_feature_leakage"
+  ],
+  "files": [
+    {
+      "path": "input/train.csv",
+      "split": "train"
+    },
+    {
+      "path": "input/test.csv",
+      "split": "test"
+    }
+  ],
+  "known_or_suspected_issues": [
+    {
+      "description": "Train rows occur strictly after the test period.",
+      "detector": "temporal_leakage",
+      "status": "known"
+    },
+    {
+      "description": "The label_proxy column is an exact label copy.",
+      "detector": "suspicious_feature_leakage",
+      "status": "known"
+    }
+  ],
+  "metrics_notes": "The remediated AUC reflects removing the temporal proxy and label-derived feature.",
+  "remediated_metrics": [
+    {
+      "higher_is_better": true,
+      "metric_name": "roc_auc",
+      "split": "test",
+      "value": 0.79
+    }
+  ],
+  "role": "acceptance",
+  "schema_version": "0.1.0",
+  "target_column": "label",
+  "text_columns": [
+    "text"
+  ],
+  "timestamp_columns": [
+    "event_time"
+  ]
+}

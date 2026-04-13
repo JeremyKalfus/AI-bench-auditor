@@ -1,0 +1,4 @@
+ticket_id,customer_id,event_time,text,label,feature
+t1,cust_001,2024-01-01,Invoice discrepancy on January statement,1,0.12
+t2,cust_002,2024-01-02,Reset password request for billing portal access,0,0.35
+t3,cust_003,2024-01-03,Upgrade requested for enterprise reporting,1,0.52
