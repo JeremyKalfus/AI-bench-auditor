@@ -1,5 +1,7 @@
 # Real Benchmark Artifact Inspection Memo
 
+This memo is supplemental. It documents an ignored local real-benchmark inspection under `downloads/` and is not part of the default checked-in verification stack described in [verification_stack.md](verification_stack.md).
+
 ## Scope
 
 - Run directory inspected: `downloads/verification_results/glue_mrpc_audit_bundle/`

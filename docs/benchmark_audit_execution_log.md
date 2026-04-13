@@ -434,7 +434,7 @@ Verification commands/tests:
 - `rg -n "data_dir|benchmark|dataset_name|load_task_desc|ideas/i_cant_believe_its_not_better|csv|parquet" bfts_config.yaml ai_scientist -g '!**/__pycache__/**'` -> PASS
 - `find . -maxdepth 2 -type d \\( -name data -o -name datasets -o -name benchmarks \\) | sort` -> PASS (no benchmark directories found)
 
-Result: BLOCKED
+Result: BLOCKED (historical checkpoint before the repo-native verification harness was implemented)
 
 Residual risks:
 - Phase 11.4 requires a reproducible comparison run for full tree search vs one-shot vs detector-only baselines, but there is no existing ablation harness or benchmark-run fixture in the repo to execute or validate that comparison.
@@ -445,3 +445,107 @@ Next phase prerequisites:
 - Provide or point to one or two concrete benchmark datasets plus the benchmark metadata/config needed to run them through audit mode.
 - Define or approve the intended harness shape for search ablation (`full tree search`, `one-shot agent`, `detector-only baseline`) so it can be implemented and verified deterministically.
 - Add real verification-run inputs before attempting to continue Phase 11; without them, any further work would be speculative rather than verifiable.
+
+## Phase 11 (Continuation): Repo-Native Verification Harness
+
+Goal: Replace the earlier blocked assumption with a self-contained verification harness that is deterministic, checked in, and usable in local development and CI.
+
+Microsteps completed:
+- Added `ai_scientist/audits/verification.py` as the executable verification-stack module and CLI.
+- Added checked-in verification registry and benchmark fixtures under `tests/fixtures/verification/`.
+- Implemented canary, mutation, search-ablation, reproducibility, acceptance, and schema-gate phases as structured summary artifacts.
+- Added `tests/test_audit_verification_stack.py` to verify bundle materialization, mutation recall, ablation ordering, reproducibility consistency, acceptance wording, and full-stack output writing.
+- Updated the surrounding docs to describe Phase 11 as a repo-native harness rather than an untracked real-benchmark prerequisite for every local verification pass.
+
+Files changed:
+- `ai_scientist/audits/verification.py`
+- `tests/test_audit_verification_stack.py`
+- `tests/fixtures/verification/registry.json`
+- `tests/fixtures/verification/acceptance/...`
+- `tests/fixtures/verification/mutation/...`
+- `docs/verification_stack.md`
+- `README.md`
+- `docs/benchmark_audit_execution_log.md`
+
+Verification commands/tests:
+- `.venv-benchmark-audit/bin/python -m pytest tests/test_audit_verification_stack.py` -> PASS
+- `.venv-benchmark-audit/bin/python -m ai_scientist.audits.verification --output-dir /tmp/ai-bench-auditor-verification.<suffix>` -> PASS (`status=passed`, `best_strategy=full_tree_search`, `full_tree_search_adds_value=true`)
+
+Result: PASS
+
+Residual risks:
+- The default verification harness is intentionally fixture-based and deterministic; it is a strong local correctness gate, not a universal claim about every external benchmark workflow.
+- Supplemental real-benchmark inspection remains useful for wording discipline, but those runs intentionally live outside the tracked default harness.
+
+Next phase prerequisites:
+- Reintroduce paper outputs only after the report-review and verification-summary gates are wired into the launcher.
+
+## Phase 12: Gated Paper Outputs And Single-Command Flow
+
+Goal: Reintroduce manuscript outputs only after validated audit artifacts, a passing report review, and a passing verification summary.
+
+Microsteps completed:
+- Added `ai_scientist/audits/artifacts.py` to validate a completed audit bundle as a coherent artifact set.
+- Added deterministic report-review logic in `ai_scientist/audits/report_review.py`.
+- Added audit-native manuscript bundle generation in `ai_scientist/audits/manuscript.py`.
+- Added launcher preconditions through `ensure_paper_generation_preconditions(...)` and post-audit orchestration through `run_post_audit_review_and_paper(...)`.
+- Added tests covering report review, manuscript bundle generation, and the one-command audit flow with a single pre-research approval gate.
+
+Files changed:
+- `ai_scientist/audits/artifacts.py`
+- `ai_scientist/audits/report_review.py`
+- `ai_scientist/audits/manuscript.py`
+- `launch_scientist_bfts.py`
+- `tests/test_audit_report_review.py`
+- `tests/test_audit_paper_bundle.py`
+- `tests/test_audit_single_command_flow.py`
+- `docs/benchmark_audit_execution_log.md`
+
+Verification commands/tests:
+- `.venv-benchmark-audit/bin/python -m pytest tests/test_audit_report_review.py tests/test_audit_paper_bundle.py tests/test_audit_single_command_flow.py` -> PASS
+
+Result: PASS
+
+Residual risks:
+- End-to-end manual audit runs still depend on live model/API availability and a valid benchmark idea/spec; the checked-in tests intentionally stub or fixture those external surfaces where appropriate.
+- The paper gate is only as trustworthy as the selected verification summary, so local overrides of `--verification-stack-results` must be used carefully.
+
+Next phase prerequisites:
+- Keep documentation and runtime dependencies aligned with the implemented launcher behavior.
+
+## Phase 13: Documentation And Runtime Consistency Pass
+
+Goal: Make the docs consistent with the implemented system and close the `psutil` dependency gap that affected non-dry-run cleanup.
+
+Microsteps completed:
+- Rewrote `README.md` so it describes the current audit mode, paper mode, verification stack, and repository map.
+- Added `docs/architecture.md` as an in-depth architecture reference covering control flow, artifact flow, run-directory layout, and extension points.
+- Updated `docs/verification_stack.md`, `docs/phase12_kickoff_note.md`, `docs/artifact_inspection_real_benchmark.md`, and `docs/benchmark_audit_revised_plan.md` so they agree on the current repo-native verification and gated manuscript model.
+- Added `psutil` to `requirements.txt`.
+- Hardened `cleanup_processes()` so a missing `psutil` install no longer turns cleanup into a runtime failure.
+- Added `tests/test_launcher_cleanup.py` to cover the missing-`psutil` fallback behavior.
+
+Files changed:
+- `README.md`
+- `docs/architecture.md`
+- `docs/verification_stack.md`
+- `docs/phase12_kickoff_note.md`
+- `docs/artifact_inspection_real_benchmark.md`
+- `docs/benchmark_audit_revised_plan.md`
+- `launch_scientist_bfts.py`
+- `requirements.txt`
+- `tests/test_launcher_cleanup.py`
+- `docs/benchmark_audit_execution_log.md`
+
+Verification commands/tests:
+- `.venv-benchmark-audit/bin/python launch_scientist_bfts.py --help` -> PASS
+- `.venv-benchmark-audit/bin/python -m pytest -q` -> PASS (`72 passed`)
+
+Result: PASS
+
+Residual risks:
+- `cleanup_processes()` is now robust to a missing `psutil`, but the recommended environment still needs `pip install -r requirements.txt` so non-dry-run cleanup uses the intended dependency set.
+- The verification CLI emitted a harmless `runpy` runtime warning in one local invocation because the module had already been imported in-process; the command still completed with `status=passed`.
+
+Next phase prerequisites:
+- Keep the docs and verification expectations updated as the artifact contracts or benchmark registry evolve.

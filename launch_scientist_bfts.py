@@ -909,8 +909,12 @@ def run_paper_mode(args) -> None:
 def cleanup_processes() -> None:
     print("Start cleaning up processes")
 
-    import psutil
     import signal
+    try:
+        import psutil
+    except ModuleNotFoundError:
+        print("Skipping process cleanup because `psutil` is not installed.")
+        return
 
     current_process = psutil.Process()
     children = current_process.children(recursive=True)

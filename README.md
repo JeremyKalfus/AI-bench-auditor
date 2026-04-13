@@ -1,55 +1,42 @@
 # AI-bench-auditor
 
-AI-bench-auditor is a benchmark leakage auditing workflow built on top of the AI Scientist v2 codebase and its agentic tree-search spine. The product surface is audit-first: it generates a research plan, requires a human approval gate before any audit execution begins, produces deterministic audit artifacts, reviews the final audit report automatically, and only then packages the validated run as a LaTeX paper source bundle with real figures, tables, and citations after the verification stack gate passes.
+AI-bench-auditor is a benchmark leakage auditing workflow built on top of the AI Scientist v2 codebase and its agentic tree-search spine. The product surface is audit-first: it prepares deterministic dataset context, generates a research plan, enforces a human approval gate before research begins, prefers structured audit artifacts over prose, reviews the final audit report automatically, and can then package a validated run as a LaTeX paper source bundle with optional PDF output after the verification-stack gate passes.
 
 The repository still uses the internal Python package path `ai_scientist` for compatibility with the upstream codebase. The intended user-facing workflow, CLI, and documentation in this repository are for AI-bench-auditor.
 
-## What It Does
+## Current Status
 
-AI-bench-auditor is designed for benchmark leakage and protocol-failure investigations where structured artifacts must remain the source of truth.
+The tracked repository currently implements:
 
-Core workflow:
+- `audit` mode for benchmark-input preparation, dataset-context staging, plan review, tree-search execution, artifact-first validation, audit-report generation, report review, and optional paper packaging.
+- `paper` mode that only consumes a prepared audit run directory and refuses raw benchmark input.
+- deterministic audit ranking in the tree-search journal based on structured artifacts rather than LLM selection.
+- a repo-native verification stack with schema gating, canaries, mutation tests, search ablations, reproducibility checks, and acceptance checks over checked-in verification fixtures.
+- an audit-native manuscript builder that writes `paper.tex`, figures, tables, appendix material, `paper_manifest.json`, optional `paper.pdf`, and `paper_bundle.zip` when the gate conditions are satisfied.
 
-1. Prepare benchmark and dataset context from the supplied audit idea/spec plus dataset metadata.
-2. Generate `research_plan.json` and `research_plan.md`.
-3. Pause for the required human plan review gate.
-4. Run the existing four-stage audit search scaffold.
-5. Validate primary audit artifacts.
-6. Generate `audit_report.md`.
-7. Run an automated audit-report review against real artifacts.
-8. Build a LaTeX paper source bundle and optional PDF, but only when the Phase 12 paper-generation gate passes.
-9. Stop with no additional human checkpoint after plan approval.
+The repository does not claim that every external benchmark workflow has already been empirically validated end to end. The checked-in verification harness is deliberately small and deterministic; real external benchmark staging and generated outputs should remain outside the tracked source tree.
+
+## What The System Does
+
+The main audit workflow is:
+
+1. Read a benchmark idea/spec JSON file.
+2. Stage benchmark files and generate deterministic dataset context.
+3. Write `research_plan.json` and `research_plan.md`.
+4. Pause for the required human plan-review gate unless review is explicitly skipped or pre-approved.
+5. Run the adapted four-stage tree-search scaffold in audit mode.
+6. Accept or reject branch results from structured audit artifacts, not just terminal text.
+7. Choose the best audit branch deterministically.
+8. Generate `audit_report.md` from the validated artifact bundle.
+9. Run an automated report review against the artifact bundle.
+10. Optionally build an audit-native manuscript bundle if the verification-stack gate passes.
 
 The system is intentionally conservative:
 
 - It does not allow research to begin when plan review is required and approval is missing.
-- It does not allow paper generation from invalid audit artifacts or a failing verification-stack gate.
+- It does not allow paper generation from invalid audit artifacts or a failing verification summary.
 - It does not fabricate citations, figures, or artifact-backed claims.
 - It prefers deterministic artifacts over LLM prose whenever both exist.
-
-## Expected Outputs
-
-A successful audit-mode run with paper packaging enabled should leave behind at least:
-
-- `research_plan.json`
-- `research_plan.md`
-- `plan_review_state.json`
-- `plan_approval.json`
-- `audit_results.json`
-- `split_manifest.json`
-- `metrics_before_after.json`
-- `findings.csv` or `findings.parquet`
-- `audit_report.md`
-- `audit_report_review.json`
-- `audit_report_review.md`
-- `paper/paper.tex`
-- `paper/references.bib`
-- `paper/figures/`
-- `paper/tables/`
-- `paper/appendix/`
-- `paper/paper_manifest.json`
-- optional `paper/paper.pdf` when a LaTeX toolchain is available and compilation succeeds
-- `paper_bundle.zip`
 
 ## Installation
 
@@ -61,12 +48,14 @@ source .venv-benchmark-audit/bin/activate
 pip install -r requirements.txt
 ```
 
+`requirements.txt` now includes `psutil`, which is used by the launcher for non-dry-run process cleanup.
+
 Optional but recommended for PDF compilation:
 
 - macOS with Homebrew: `brew install texlive`
 - Linux: install a TeX distribution that provides `pdflatex` and `bibtex`
 
-Model and API keys depend on which LLMs you use. Typical environment variables include:
+Model and API keys depend on which LLM backends you use. Typical environment variables include:
 
 ```bash
 export OPENAI_API_KEY="YOUR_OPENAI_KEY"
@@ -75,23 +64,28 @@ export S2_API_KEY="YOUR_SEMANTIC_SCHOLAR_KEY"
 
 Notes:
 
-- `citation-mode=provided` is the most reproducible option because it uses a user-supplied bibliography file.
-- `citation-mode=auto` is supported, but it depends on honest external citation resolution and can fail if required references cannot be resolved.
+- `citation-mode=provided` is the most reproducible manuscript path because it uses a user-supplied bibliography file.
+- `citation-mode=auto` is supported, but it depends on honest citation resolution and fails if required references cannot be resolved.
+- A real manual audit run still requires a working model backend and a valid benchmark idea/spec. The checked-in tests use deterministic fixtures and targeted monkeypatching where external models would otherwise be required.
 
-## One-Command Audit Flow
+## Run Modes
 
-The intended top-level command is:
+### Audit Mode
+
+`audit` mode consumes a raw benchmark idea/spec JSON file and produces a run directory containing dataset context, plan-review artifacts, copied experiment results, promoted audit artifacts, and optional manuscript outputs.
+
+Example:
 
 ```bash
-python launch_scientist_bfts.py \
+.venv-benchmark-audit/bin/python launch_scientist_bfts.py \
   --mode audit \
   --benchmark path/to/benchmark_spec.json \
+  --output_dir path/to/run_dir \
   --plan-review required \
-  --paper-mode on_success \
-  --output_dir path/to/run_dir
+  --paper-mode on_success
 ```
 
-Useful flags:
+Useful audit flags:
 
 - `--plan-review {required,skip}`
 - `--plan-review-mode {interactive,file}`
@@ -114,52 +108,111 @@ Behavioral contract:
 - In non-interactive settings, approval must come from explicit approval flags or files.
 - Once the plan is approved, the rest of the run proceeds automatically.
 
-## Paper Generation Rules
+### Paper Mode
 
-The paper stage is audit-native, not the old generic AI Scientist paper path.
+`paper` mode consumes a previously prepared audit run directory. It refuses raw benchmark input and reruns the report-review plus manuscript stages against the resolved audit artifact bundle.
 
-The manuscript builder:
+Example:
 
-- consumes validated audit artifacts plus the reviewed audit report
-- requires a passed `verification_stack_results.json` summary before paper mode can proceed
-- derives figures and tables from real artifact files
-- emits an evidence map in the appendix
-- fails rather than inventing references when citations cannot be resolved honestly
-- records PDF compilation success or failure in `paper_manifest.json`
+```bash
+.venv-benchmark-audit/bin/python launch_scientist_bfts.py \
+  --mode paper \
+  --audit-run-dir path/to/run_dir \
+  --citation-mode provided \
+  --references-file path/to/references.bib
+```
 
-If PDF compilation is requested and fails, the run exits nonzero unless `--allow-source-only` is explicitly set.
+By default, paper generation looks for `verification_results/latest/verification_stack_results.json`. Use `--verification-stack-results PATH` to point the gate at a different verification summary.
 
-By default, paper mode looks for `verification_results/latest/verification_stack_results.json` under the repo root. Use `--verification-stack-results PATH` to point the gate at a different verification run summary.
+## Expected Run Outputs
 
-## Current Scope
+A successful audit-mode run with paper packaging enabled should leave behind at least:
 
-This repository now supports:
+- `idea.json`
+- `bfts_config.yaml`
+- `audit_run_metadata.json`
+- `dataset_card.md`
+- `research_plan.json`
+- `research_plan.md`
+- `plan_review_state.json`
+- `plan_approval.json`
+- `audit_results.json`
+- `split_manifest.json`
+- `findings.csv` or `findings.parquet`
+- `metrics_before_after.json` when remediation or falsification is required
+- `audit_report.md`
+- `audit_report_review.json`
+- `audit_report_review.md`
+- `experiment_results/`
+- `evidence/` when evidence files exist
+- `paper/paper.tex`
+- `paper/references.bib`
+- `paper/figures/`
+- `paper/tables/`
+- `paper/appendix/`
+- `paper/paper_manifest.json`
+- optional `paper/paper.pdf` when a LaTeX toolchain is available and compilation succeeds
+- `paper_bundle.zip` when zip emission is enabled
 
-- a required pre-research human plan-review gate
-- automated post-audit report review
-- automated LaTeX source bundle generation after a validated audit run and a passed verification-stack gate
-- a deterministic Phase 11 verification stack with schema gating, canaries, mutation tests, search ablations, reproducibility summaries, and acceptance checks over checked-in verification benchmarks
+Top-level promoted artifacts may be symlinked or copied from the winning bundle under `experiment_results/`.
 
-This repository still does not claim final empirical validation of every external benchmark workflow. The self-contained Phase 11 harness lives in `ai_scientist.audits.verification` and uses tiny checked-in deterministic fixtures under `tests/fixtures/verification/`; real external benchmarks should be staged outside tracked source trees, with generated run outputs kept outside the repo’s tracked surface as well.
+## Verification And Testing
 
-## Repository Notes
+Run the full local test suite:
 
-- The internal package layout remains under `ai_scientist/` to minimize patch risk and preserve compatibility with the upstream base.
-- The audit search still reuses the existing four-stage scaffold where possible.
-- The implementation favors the smallest trustworthy patch set over a broad rename or architectural fork.
+```bash
+.venv-benchmark-audit/bin/python -m pytest -q
+```
+
+Run the deterministic verification stack:
+
+```bash
+.venv-benchmark-audit/bin/python -m ai_scientist.audits.verification \
+  --output-dir verification_results/latest
+```
+
+What the verification stack covers:
+
+- schema gating for generated audit bundles and summary artifacts
+- canary execution over deterministic leakage fixtures
+- mutation testing from a clean benchmark base
+- search ablation across `detector_only`, `one_shot_agent`, and `full_tree_search`
+- reproducibility checks across repeated `full_tree_search` runs
+- acceptance checks over checked-in verification benchmarks
+
+The launcher’s paper-generation gate reads the verification summary and requires:
+
+- overall verification status `passed`
+- schema gate `passed`
+- canary summary `passed`
+- mutation summary `passed`
+- search ablation summary `passed`
+- `full_tree_search_adds_value = true`
+- reproducibility summary `passed`
+
+## Repository Map
+
+Key implementation areas:
+
+- `launch_scientist_bfts.py`: top-level CLI, run-mode validation, plan-review orchestration, artifact promotion, report review, paper-generation gate, and manuscript handoff.
+- `ai_scientist/audits/`: audit-native schemas, dataset context, research-plan generation, plan-review logic, artifact validation, detectors, scoring, reporting, report review, manuscript generation, and verification stack.
+- `ai_scientist/treesearch/`: reused tree-search engine adapted for audit prompts, artifact-first execution parsing, audit-stage completion, and deterministic audit ranking.
+- `tests/`: fixture-backed unit and integration coverage for the audit path, verification stack, report review, manuscript bundle, and single-command flow.
+- `tests/fixtures/verification/`: checked-in registry plus deterministic acceptance and mutation datasets used by the verification harness.
 
 ## Supporting Docs
 
+- Architecture spec: [docs/architecture.md](docs/architecture.md)
 - Revised implementation plan: [docs/benchmark_audit_revised_plan.md](docs/benchmark_audit_revised_plan.md)
 - Execution log: [docs/benchmark_audit_execution_log.md](docs/benchmark_audit_execution_log.md)
 - Verification stack guide: [docs/verification_stack.md](docs/verification_stack.md)
-- Real-benchmark artifact inspection memo: [docs/artifact_inspection_real_benchmark.md](docs/artifact_inspection_real_benchmark.md)
-- Phase 12 kickoff note: [docs/phase12_kickoff_note.md](docs/phase12_kickoff_note.md)
+- Supplemental real-benchmark inspection memo: [docs/artifact_inspection_real_benchmark.md](docs/artifact_inspection_real_benchmark.md)
+- Phase 12 status note: [docs/phase12_kickoff_note.md](docs/phase12_kickoff_note.md)
 
 ## Acknowledgements
 
 AI-bench-auditor is built on top of the AI Scientist v2 repository and continues to reuse pieces of the AIDE-based tree-search infrastructure. Credit remains due to the upstream authors and maintainers whose code made this adaptation possible.
 
-## License and Responsible Use
+## License And Responsible Use
 
 This repository remains subject to the upstream project license unless and until that license is replaced explicitly. Because the system executes LLM-written code and can produce publication-ready artifacts, it should be run in a controlled environment with careful human oversight.

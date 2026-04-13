@@ -1,22 +1,58 @@
-# Phase 12 Kickoff Note
+# Phase 12 Status Note
 
-Phase 12 is defined in `docs/benchmark_audit_revised_plan.md` at lines 705-720. The first continuation point is Phase `12.1 Define paper-generation preconditions`, which requires an explicit gate and verifies that attempted paper generation fails early when those preconditions are not satisfied.
+This file now serves as the current status note for the paper-output phase.
 
-## What Cleanup Changed
+Phase 12 is no longer only a kickoff item. The repository now contains the implemented manuscript gate and bundle-generation path.
 
-- Synthetic verification fixtures were moved from `benchmarks/verification/` to `tests/fixtures/verification/` so tracked test assets are clearly labeled as fixtures rather than real benchmark corpora.
-- `docs/verification_stack.md` and `README.md` now distinguish tracked deterministic fixtures from ignored local real-benchmark staging under `downloads/real_benchmarks/` and ignored generated outputs under `downloads/verification_results/`.
-- No third-party benchmark corpus was committed. The real MRPC staging area and generated run outputs remain outside the tracked source surface.
+## What Is Implemented
 
-## What The Real Artifact Inspection Concluded
+- `launch_scientist_bfts.py` enforces paper-generation preconditions through `ensure_paper_generation_preconditions(...)`.
+- The post-audit path always runs deterministic report review before manuscript generation through `review_audit_report(...)`.
+- `ai_scientist.audits.manuscript.build_audit_manuscript_bundle(...)` generates:
+  - `paper/paper.tex`
+  - `paper/references.bib`
+  - `paper/figures/`
+  - `paper/tables/`
+  - `paper/appendix/`
+  - `paper/paper_manifest.json`
+  - optional `paper/paper.pdf`
+  - optional `paper_bundle.zip`
+- `paper` mode consumes a validated audit run directory and refuses raw benchmark input.
 
-- The latest real benchmark run inspected was the local GLUE MRPC audit under `downloads/verification_results/`.
-- The artifacts support a narrow claim of cross-split near-duplicate or paraphrase-overlap risk with `48` evidence-backed findings.
-- The artifacts do not support a broader claim that MRPC is invalid due to leakage.
-- The real ablation ties `one_shot_agent` and `full_tree_search`, so the repo must not imply that tree search clearly outperformed one-shot on this benchmark.
+The tracked tests covering this phase include:
 
-## Why The Repo Is Better Positioned For Phase 12
+- `tests/test_audit_report_review.py`
+- `tests/test_audit_paper_bundle.py`
+- `tests/test_audit_single_command_flow.py`
 
-- The tracked repo surface is cleaner and more intentional: deterministic fixtures are labeled as fixtures, real benchmark downloads remain ignored, and generated outputs no longer blur together with checked-in assets.
-- The acceptance wording now reflects the narrower truth supported by the structured MRPC artifacts.
-- Because the real ablation did not show tree-search advantage, the honest next Phase 12 step is to add a paper-generation gate that blocks manuscript output unless the verification stack actually passes the required preconditions.
+## What The Gate Requires
+
+Paper generation is blocked unless the selected `verification_stack_results.json` reports:
+
+- overall status `passed`
+- schema gate passed
+- canary suite passed
+- mutation thresholds passed
+- search ablation passed
+- `full_tree_search_adds_value = true`
+- reproducibility passed
+
+This means the manuscript path depends on the repo-native verification harness, not on a handwritten claim in documentation.
+
+## Relationship To Real-Benchmark Inspection
+
+The tracked repository uses a small deterministic verification harness under `tests/fixtures/verification/`. Supplemental real-benchmark inspection remains documented separately in [artifact_inspection_real_benchmark.md](artifact_inspection_real_benchmark.md) and is kept outside the tracked source surface under `downloads/`.
+
+That separation is intentional:
+
+- the tracked harness keeps development and CI deterministic
+- supplemental real-benchmark inspection helps calibrate wording and honesty on external benchmarks
+
+## Why The MRPC Note Still Matters
+
+The local GLUE MRPC inspection remains useful as a wording guardrail:
+
+- it supports a narrow claim of overlap risk, not blanket benchmark invalidity
+- its local ablation tie means MRPC should not be used as evidence that tree search clearly outperforms one-shot search
+
+That historical lesson is now enforced in code by the gate: the launcher looks at the selected verification summary and blocks manuscript generation if the ablation summary does not show that tree search adds value.

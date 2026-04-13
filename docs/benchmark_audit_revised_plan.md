@@ -1,5 +1,7 @@
 # Benchmark Leakage Audit: Revised Implementation Plan
 
+Status note as of 2026-04-12: the repository now implements the core flow described below, including the repo-native verification stack and the gated manuscript-bundle path. This document remains the design plan and sequencing record; for current behavior, see [../README.md](../README.md), [architecture.md](architecture.md), and [benchmark_audit_execution_log.md](benchmark_audit_execution_log.md).
+
 ## Context
 
 We want to build `AI-bench-auditor`, a benchmark leakage auditing system built on top of `AI Scientist v2`, that:
@@ -701,6 +703,11 @@ These verification phases are required, not optional.
   - acceptance-test reports
 - Verification:
   - system either recovers the known issue with evidence or emits a clean audit without unsupported claims
+
+Implementation note:
+
+- the checked-in repository satisfies the default local acceptance path with deterministic acceptance fixtures under `tests/fixtures/verification/`
+- supplemental real-benchmark inspection remains documented separately in `docs/artifact_inspection_real_benchmark.md` and is intentionally kept outside the tracked default harness
 
 ## Phase 12: Reintroduce Paper Outputs
 
