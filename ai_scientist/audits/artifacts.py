@@ -15,7 +15,7 @@ from .schema import (
 )
 
 
-FINDINGS_ARTIFACT_NAMES = ("findings.parquet", "findings.csv")
+FINDINGS_ARTIFACT_NAMES = ("findings.csv", "findings.parquet")
 OPEN_REMEDIATION_STATUSES = {"open", "pending", "unresolved", "needs_followup"}
 
 
@@ -43,7 +43,13 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def _load_findings(path: Path) -> pd.DataFrame:
     if path.suffix == ".parquet":
-        frame = pd.read_parquet(path)
+        try:
+            frame = pd.read_parquet(path)
+        except Exception:
+            csv_fallback = path.with_suffix(".csv")
+            if not csv_fallback.exists():
+                raise
+            frame = pd.read_csv(csv_fallback)
     else:
         frame = pd.read_csv(path)
     validate_findings_columns(frame.columns)

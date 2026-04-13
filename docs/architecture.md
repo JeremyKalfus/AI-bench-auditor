@@ -17,7 +17,7 @@ The system is built around a few non-negotiable constraints:
 At a high level, the repository has four cooperating layers:
 
 1. Control plane
-   `launch_scientist_bfts.py` validates CLI arguments, prepares run directories, triggers plan review, orchestrates audit versus study mode, promotes artifacts, runs report review, and builds the study bundle.
+   `launch_scientist_bfts.py` validates CLI arguments, optionally auto-discovers a benchmark draft spec, prepares run directories, triggers plan review, orchestrates audit versus study mode, promotes artifacts, runs report review, and builds the study bundle.
 2. Search plane
    `ai_scientist/treesearch/` provides the reused AI Scientist v2 search loop, but audit tasks replace training-centric stage goals, prompts, node parsing, and ranking logic.
 3. Artifact plane
@@ -48,6 +48,8 @@ flowchart TD
 ### Launcher and orchestration
 
 - `launch_scientist_bfts.py`
+  - auto-discovers benchmark candidates when audit mode starts without an explicit spec
+  - prefers dataset-backed candidates over paper-only hits when selecting the draft spec
   - parses `audit` and `study` modes
   - prepares an audit run directory and copied config
   - enriches the idea/spec with dataset context
@@ -112,7 +114,7 @@ flowchart TD
 
 ### 1. CLI parsing and argument validation
 
-`launch_scientist_bfts.py` accepts `--mode audit` and `--mode study`. Audit mode consumes a benchmark idea/spec JSON; study mode requires an `audit_run_dir` containing `audit_run_metadata.json`.
+`launch_scientist_bfts.py` accepts `--mode audit` and `--mode study`. Audit mode either consumes a benchmark idea/spec JSON or auto-discovers one when no raw spec is provided; study mode requires an `audit_run_dir` containing `audit_run_metadata.json`.
 
 ### 2. Audit run preparation
 
@@ -128,6 +130,8 @@ flowchart TD
 
 The copied config is also where CPU-safe audit defaults such as `agent.num_workers = 1` are applied.
 
+When audit mode starts without `--benchmark` or `--load_ideas`, the launcher first runs benchmark discovery into `benchmark_discovery/`, selects the best draft spec with a dataset-first preference, records that decision in `audit_run_metadata.json`, and then enters the same preparation path described above.
+
 ### 3. Dataset-context materialization
 
 `dataset_context.py` is the first deterministic artifact stage. It:
@@ -140,6 +144,8 @@ The copied config is also where CPU-safe audit defaults such as `agent.num_worke
 - writes `split_manifest.json`
 
 The enriched benchmark metadata is injected back into `idea.json`, so downstream prompts and reports work from a grounded task description.
+
+If the selected benchmark spec is still only a discovery draft and `Benchmark Metadata.files` is empty, dataset context cannot be staged yet. The launcher preserves that state explicitly instead of pretending local split materialization already happened.
 
 ### 4. Research plan and approval gate
 

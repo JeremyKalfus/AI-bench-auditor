@@ -3,7 +3,11 @@ from types import SimpleNamespace
 from ai_scientist.treesearch import parallel_agent as parallel_agent_module
 from ai_scientist.treesearch.backend import compile_prompt_to_md
 from ai_scientist.treesearch.journal import Node
-from ai_scientist.treesearch.parallel_agent import MinimalAgent, ParallelAgent
+from ai_scientist.treesearch.parallel_agent import (
+    MinimalAgent,
+    ParallelAgent,
+    _populate_process_workspace_inputs,
+)
 
 
 def make_audit_task_desc() -> str:
@@ -60,6 +64,9 @@ def test_audit_draft_prompt_prefers_audit_stack_and_required_artifacts():
     assert "metrics_before_after.json" in prompt_md
     assert "findings.csv or findings.parquet" in prompt_md
     assert "Schema inspection, split inspection" in prompt_md
+    assert "validate_audit_results" in prompt_md
+    assert "empty_findings_dataframe" in prompt_md
+    assert "Do not invent a custom top-level schema" in prompt_md
     assert "Don't suggest to do EDA." not in prompt_md
     assert "Track and print validation loss at each epoch" not in prompt_md
     assert "torch.device" not in prompt_md
@@ -146,3 +153,24 @@ def test_audit_stage_four_idea_prompt_is_robustness_focused(monkeypatch):
     assert idea.name == "Temporal Negative Control"
     assert "robustness, falsification, or negative-control step" in prompt_md
     assert "multiple synthetic datasets" not in prompt_md.lower()
+
+
+def test_populate_process_workspace_inputs_copies_benchmark_context_only(tmp_path):
+    source_dir = tmp_path / "source"
+    source_dir_2 = tmp_path / "source-2"
+    workspace_dir = tmp_path / "workspace"
+    source_dir.mkdir()
+    source_dir_2.mkdir()
+    workspace_dir.mkdir()
+
+    (source_dir / "dataset_card.md").write_text("# Dataset Card\n")
+    (source_dir / "audit_results.json").write_text("{}")
+    data_dir = source_dir_2 / "data"
+    data_dir.mkdir()
+    (data_dir / "train.csv").write_text("x\n1\n")
+
+    _populate_process_workspace_inputs([source_dir, source_dir_2], workspace_dir)
+
+    assert (workspace_dir / "dataset_card.md").exists()
+    assert (workspace_dir / "data" / "train.csv").exists()
+    assert not (workspace_dir / "audit_results.json").exists()

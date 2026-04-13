@@ -8,6 +8,7 @@ The repository still uses the internal Python package path `ai_scientist` for co
 
 The tracked repository currently implements:
 
+- automatic benchmark scouting in `audit` mode when no benchmark/spec is passed, with dataset-backed candidates preferred over paper-only hits.
 - `audit` mode for benchmark-input preparation, dataset-context staging, plan review, tree-search execution, artifact-first validation, audit-report generation, report review, and study-bundle generation.
 - `study` mode that only consumes a prepared audit run directory and refuses raw benchmark input.
 - deterministic audit ranking in the tree-search journal based on structured artifacts rather than LLM selection.
@@ -20,16 +21,17 @@ The repository does not claim that every external benchmark workflow has already
 
 The main audit workflow is:
 
-1. Read a benchmark idea/spec JSON file.
-2. Stage benchmark files and generate deterministic dataset context.
-3. Write `research_plan.json` and `research_plan.md`.
-4. Pause for the required human plan-review gate unless review is explicitly skipped or pre-approved.
-5. Run the adapted four-stage tree-search scaffold in audit mode.
-6. Accept or reject branch results from structured audit artifacts, not just terminal text.
-7. Choose the best audit branch deterministically.
-8. Generate `audit_report.md` from the validated artifact bundle.
-9. Run an automated report review against the artifact bundle.
-10. Build the markdown-first study bundle for downstream LLM or human review.
+1. If no benchmark/spec is provided, scout public benchmark candidates and prefer dataset-backed hits when selecting a draft spec.
+2. Read the benchmark idea/spec JSON file.
+3. Stage benchmark files and generate deterministic dataset context when local split files are available.
+4. Write `research_plan.json` and `research_plan.md`.
+5. Pause for the required human plan-review gate unless review is explicitly skipped or pre-approved.
+6. Run the adapted four-stage tree-search scaffold in audit mode.
+7. Accept or reject branch results from structured audit artifacts, not just terminal text.
+8. Choose the best audit branch deterministically.
+9. Generate `audit_report.md` from the validated artifact bundle.
+10. Run an automated report review against the artifact bundle.
+11. Build the markdown-first study bundle for downstream LLM or human review.
 
 The system is intentionally conservative:
 
@@ -59,14 +61,23 @@ export S2_API_KEY="YOUR_SEMANTIC_SCHOLAR_KEY"
 
 Notes:
 
-- A real manual audit run still requires a working model backend and a valid benchmark idea/spec.
+- A real manual audit run still requires a working model backend and either a valid benchmark spec or a discovery topic that resolves to a useful candidate.
+- Auto-discovery writes review-first draft specs. If `Benchmark Metadata.files` is still empty, you still need to stage local benchmark splits before trusting a real audit run.
 - The checked-in tests use deterministic fixtures and targeted monkeypatching where external models would otherwise be required.
 
 ## Run Modes
 
 ### Audit Mode
 
-`audit` mode consumes a raw benchmark idea/spec JSON file and produces a run directory containing dataset context, plan-review artifacts, copied experiment results, promoted audit artifacts, and the final study bundle.
+`audit` mode either consumes a raw benchmark idea/spec JSON file or, when no spec is provided, auto-discovers one first. The default discovery path searches Semantic Scholar and Hugging Face datasets, prefers dataset-backed candidates when selecting a draft spec, writes discovery artifacts under `benchmark_discovery/`, and then continues into the normal audit preparation flow.
+
+Default discovery-first run:
+
+```bash
+.venv-benchmark-audit/bin/python launch_scientist_bfts.py \
+  --mode audit \
+  --discover-topic "reasoning LLM benchmarks"
+```
 
 Example:
 
@@ -80,6 +91,12 @@ Example:
 
 Useful audit flags:
 
+- `--discover-first` or `--no-discover-first`
+- `--discover-topic TEXT`
+- `--discovery-output-dir PATH`
+- `--discovery-model MODEL`
+- `--discovery-max-queries N`
+- `--discovery-max-candidates N`
 - `--plan-review {required,skip}`
 - `--plan-review-mode {interactive,file}`
 - `--plan-feedback-file PATH`
@@ -90,6 +107,8 @@ Useful audit flags:
 
 Behavioral contract:
 
+- If no `--benchmark` or `--load_ideas` is provided, audit mode now scouts benchmark candidates first.
+- Candidate selection prefers dataset-backed hits over paper-only hits when both are available.
 - `--plan-review required` is the default in audit mode.
 - In interactive terminals, the launcher can pause for approval, requested changes, or abort.
 - In non-interactive settings, approval must come from explicit approval flags or files.
@@ -161,7 +180,8 @@ Scout public benchmark candidates:
 This discovery tool searches broadly across Semantic Scholar and Hugging Face datasets, writes
 `benchmark_discovery_results.json` plus `benchmark_discovery_report.md`, and emits draft
 single-candidate spec files under `specs/`. Those specs are intentionally review-first: they keep
-`Benchmark Metadata.files` empty until you stage local benchmark files for a real audit run.
+`Benchmark Metadata.files` empty until you stage local benchmark files for a real audit run. The
+same discovery path now powers default `audit` runs when you omit `--benchmark` and `--load_ideas`.
 
 What the verification stack covers:
 
@@ -178,7 +198,7 @@ The verification stack remains a repo-native correctness signal for the audit wo
 
 Key implementation areas:
 
-- `launch_scientist_bfts.py`: top-level CLI, run-mode validation, plan-review orchestration, artifact promotion, report review, and study-bundle handoff.
+- `launch_scientist_bfts.py`: top-level CLI, run-mode validation, default benchmark discovery, plan-review orchestration, artifact promotion, report review, and study-bundle handoff.
 - `ai_scientist/audits/`: audit-native schemas, dataset context, research-plan generation, plan-review logic, artifact validation, detectors, scoring, reporting, report review, study-bundle generation, and verification stack.
 - `ai_scientist/treesearch/`: reused tree-search engine adapted for audit prompts, artifact-first execution parsing, audit-stage completion, and deterministic audit ranking.
 - `tests/`: fixture-backed unit and integration coverage for the audit path, verification stack, report review, study bundle, and single-command flow.

@@ -29,6 +29,16 @@ REPRODUCIBILITY_SIGNAL_ARTIFACTS = (
     "reproducibility.json",
 )
 
+
+def _path_relative_to_cwd_or_absolute(path: str | Path | None) -> str | None:
+    if path is None:
+        return None
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(os.getcwd()))
+    except ValueError:
+        return str(resolved)
+
 node_selection_spec = FunctionSpec(
     name="select_best_implementation",
     description="Select the best implementation based on comprehensive analysis",
@@ -245,11 +255,7 @@ class Node(DataClassJsonMixin):
             "exc_info": self.exc_info,
             "exc_stack": self.exc_stack,
             "analysis": self.analysis,
-            "exp_results_dir": (
-                str(Path(self.exp_results_dir).resolve().relative_to(os.getcwd()))
-                if self.exp_results_dir
-                else None
-            ),
+            "exp_results_dir": _path_relative_to_cwd_or_absolute(self.exp_results_dir),
             "metric": {
                 "value": self.metric.value if self.metric else None,
                 "maximize": self.metric.maximize if self.metric else None,
@@ -268,24 +274,15 @@ class Node(DataClassJsonMixin):
             "plots_generated": self.plots_generated,
             "plots": self.plots,
             "plot_paths": (
-                [
-                    str(Path(p).resolve().relative_to(os.getcwd()))
-                    for p in self.plot_paths
-                ]
+                [_path_relative_to_cwd_or_absolute(p) for p in self.plot_paths]
                 if self.plot_paths
                 else []
             ),
             "plot_analyses": [
                 {
                     **analysis,
-                    "plot_path": (
-                        str(
-                            Path(analysis["plot_path"])
-                            .resolve()
-                            .relative_to(os.getcwd())
-                        )
-                        if analysis.get("plot_path")
-                        else None
+                    "plot_path": _path_relative_to_cwd_or_absolute(
+                        analysis.get("plot_path")
                     ),
                 }
                 for analysis in self.plot_analyses
@@ -422,7 +419,9 @@ class Journal:
             f"[purple]all nodes ID and is_buggy/is_buggy_plots flags: {list_of_nodes}[/purple]"
         )
         return [
-            n for n in self.nodes if n.is_buggy is False and n.is_buggy_plots is False
+            n
+            for n in self.nodes
+            if n.is_buggy is False and n.is_buggy_plots in (False, None)
         ]
 
     def get_node_by_id(self, node_id: str) -> Optional[Node]:

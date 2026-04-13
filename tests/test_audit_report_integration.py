@@ -15,6 +15,7 @@ from ai_scientist.audits.schema import (
 )
 from ai_scientist.treesearch.journal import Journal, Node
 from ai_scientist.treesearch.utils.metric import MetricValue
+from tests.audit_fixture_utils import write_valid_audit_bundle
 
 
 def load_launcher(repo_root: Path):
@@ -210,3 +211,42 @@ def test_run_audit_mode_generates_audit_and_study_outputs(tmp_path, monkeypatch)
     assert (idea_dir / "study_report.md").exists()
     assert (idea_dir / "study_bundle_manifest.json").exists()
     assert (idea_dir / "study_figures.zip").exists()
+
+
+def test_run_post_audit_review_uses_artifact_report_when_run_dir_copy_is_missing(
+    tmp_path,
+):
+    repo_root = Path(__file__).resolve().parents[1]
+    launcher = load_launcher(repo_root)
+
+    run_dir = tmp_path / "audit-run"
+    artifact_dir = run_dir / "experiment_results" / "experiment_node-001_proc_12345"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    write_valid_audit_bundle(artifact_dir)
+
+    from ai_scientist.audits.report import generate_audit_report
+
+    report_path = generate_audit_report(
+        audit_results_path=artifact_dir / "audit_results.json",
+        split_manifest_path=artifact_dir / "split_manifest.json",
+        findings_path=artifact_dir / "findings.csv",
+        metrics_before_after_path=artifact_dir / "metrics_before_after.json",
+        output_path=artifact_dir / "audit_report.md",
+    )
+
+    assert report_path.exists()
+    assert not (run_dir / "audit_report.md").exists()
+
+    launcher.run_post_audit_review_and_study_bundle(
+        run_dir=str(run_dir),
+        artifact_dir=artifact_dir,
+        args=SimpleNamespace(emit_study_zip=True),
+        audit_report_path=report_path,
+    )
+
+    assert (run_dir / "audit_report_review.json").exists()
+    assert (run_dir / "audit_report_review.md").exists()
+    assert (run_dir / "study_report.md").exists()
+    assert (run_dir / "study_bundle_manifest.json").exists()
+    assert (run_dir / "study_figures.zip").exists()

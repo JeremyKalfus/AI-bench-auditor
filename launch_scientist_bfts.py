@@ -16,6 +16,8 @@ MODE_STUDY = "study"
 DEFAULT_IDEAS_PATH = "ai_scientist/ideas/i_cant_believe_its_not_better.json"
 DEFAULT_CONFIG_PATH = "bfts_config.yaml"
 AUDIT_RUN_METADATA_FILE = "audit_run_metadata.json"
+DEFAULT_DISCOVERY_MODEL = "gpt-4.1-mini"
+DISCOVERY_ARTIFACT_DIRNAME = "benchmark_discovery"
 
 
 def positive_int(value: str) -> int:
@@ -23,6 +25,185 @@ def positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("value must be >= 1")
     return parsed
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def resolve_repo_relative_path(path: str | None) -> str | None:
+    if path is None:
+        return None
+
+    candidate = Path(path).expanduser()
+    if candidate.is_absolute():
+        return str(candidate)
+
+    if candidate.exists():
+        return str(candidate.resolve())
+
+    repo_candidate = repo_root() / candidate
+    if repo_candidate.exists():
+        return str(repo_candidate.resolve())
+
+    return str(candidate)
+
+
+def slugify_identifier(value: str) -> str:
+    value = re.sub(r"[^a-z0-9]+", "_", value.strip().lower())
+    return value.strip("_") or "benchmark"
+
+
+def load_ideas_from_path(path: str) -> list[dict]:
+    with open(path, "r") as f:
+        ideas = json.load(f)
+
+    if not isinstance(ideas, list) or not ideas:
+        raise ValueError(f"Expected a non-empty idea/spec list in {path}")
+
+    return ideas
+
+
+def derive_discovery_topic(idea: dict) -> str:
+    for field_name in ("Discovery Topic", "Title", "Short Hypothesis", "Name"):
+        value = idea.get(field_name)
+        if isinstance(value, str) and value.strip():
+            topic = value.strip()
+            break
+    else:
+        topic = "machine learning benchmarks"
+
+    topic_lower = topic.lower()
+    if "benchmark" not in topic_lower and "dataset" not in topic_lower:
+        topic = f"{topic} benchmarks and datasets"
+    return topic
+
+
+def select_discovered_spec(report: dict) -> tuple[dict, str, str]:
+    candidates = report.get("candidates") or []
+    spec_paths = report.get("spec_paths") or {}
+    ranked_candidates = []
+
+    for candidate_index, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            continue
+
+        candidate_key = slugify_identifier(
+            str(candidate.get("dataset_name") or candidate.get("benchmark_name") or "")
+        )
+        spec_path = spec_paths.get(candidate_key)
+        if not spec_path:
+            continue
+
+        source_type = str(candidate.get("source_type") or "").lower()
+        source_url = str(candidate.get("source_url") or "").lower()
+        dataset_backed = bool(candidate.get("source_id")) or source_type in {
+            "huggingface_dataset",
+            "mixed",
+        }
+        if "huggingface.co/datasets/" in source_url:
+            dataset_backed = True
+
+        ranked_candidates.append(
+            (
+                (0 if dataset_backed else 1, candidate_index),
+                candidate,
+                spec_path,
+                dataset_backed,
+            )
+        )
+
+    if not ranked_candidates:
+        raise ValueError(
+            "Benchmark discovery completed but did not emit a selectable draft spec."
+        )
+
+    _, candidate, spec_path, dataset_backed = min(
+        ranked_candidates, key=lambda item: item[0]
+    )
+    selection_strategy = (
+        "dataset_backed_first" if dataset_backed else "top_candidate_fallback"
+    )
+    return candidate, spec_path, selection_strategy
+
+
+def ensure_audit_output_dir(args, topic: str) -> None:
+    if args.output_dir:
+        return
+
+    date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    topic_slug = slugify_identifier(topic)[:80]
+    args.output_dir = f"experiments/{date}_{topic_slug}_attempt_{args.attempt_id}"
+
+
+def autodiscover_benchmark_spec(args) -> None:
+    from ai_scientist.discover_benchmarks import discover_benchmarks
+
+    seed_ideas_path = resolve_repo_relative_path(DEFAULT_IDEAS_PATH)
+    assert seed_ideas_path is not None
+    seed_ideas = load_ideas_from_path(seed_ideas_path)
+    if args.idea_idx >= len(seed_ideas):
+        raise ValueError(
+            f"--idea_idx {args.idea_idx} is out of range for default discovery ideas at {seed_ideas_path}"
+        )
+
+    seed_idea_idx = args.idea_idx
+    topic = args.discover_topic or derive_discovery_topic(seed_ideas[seed_idea_idx])
+    ensure_audit_output_dir(args, topic)
+
+    discovery_output_dir = Path(
+        args.discovery_output_dir or Path(args.output_dir) / DISCOVERY_ARTIFACT_DIRNAME
+    )
+    discovery_kwargs = {
+        "topic": topic,
+        "output_dir": discovery_output_dir,
+        "model": args.discovery_model,
+        "max_queries": args.discovery_max_queries,
+        "max_candidates": args.discovery_max_candidates,
+        "use_llm": True,
+    }
+
+    try:
+        result = discover_benchmarks(**discovery_kwargs)
+        used_llm = True
+    except Exception as exc:
+        print(
+            "Automatic benchmark discovery could not use LLM-assisted query expansion "
+            f"({exc}). Retrying with deterministic query expansion."
+        )
+        result = discover_benchmarks(
+            **{
+                **discovery_kwargs,
+                "model": None,
+                "use_llm": False,
+            }
+        )
+        used_llm = False
+
+    report = json.loads(Path(result["json_path"]).read_text())
+    selected_candidate, spec_path, selection_strategy = select_discovered_spec(report)
+
+    args.load_ideas = spec_path
+    args.idea_idx = 0
+    args.benchmark_discovery = {
+        "topic": topic,
+        "source_idea_idx": seed_idea_idx,
+        "selection_strategy": selection_strategy,
+        "used_llm": used_llm,
+        "report_json_path": result["json_path"],
+        "report_markdown_path": result["markdown_path"],
+        "selected_spec_path": spec_path,
+        "selected_candidate": {
+            "benchmark_name": selected_candidate.get("benchmark_name"),
+            "dataset_name": selected_candidate.get("dataset_name"),
+            "source_type": selected_candidate.get("source_type"),
+            "source_url": selected_candidate.get("source_url"),
+        },
+    }
+
+    print(f"Auto-discovery topic: {topic}")
+    print(f"Discovery report: {result['markdown_path']}")
+    print(f"Selected draft spec: {spec_path}")
 
 
 def print_time():
@@ -113,6 +294,51 @@ def parse_arguments(argv=None):
         type=str,
         default=None,
         help="Audit-mode only: explicit output directory for the full run bundle.",
+    )
+    parser.add_argument(
+        "--discover-first",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Audit-mode only: when no benchmark spec is provided, scout public benchmarks "
+            "first and auto-select a draft spec. Enabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--discover-topic",
+        type=str,
+        default=None,
+        help=(
+            "Audit-mode only: override the topic used for automatic benchmark discovery. "
+            "If omitted, discovery is seeded from the bundled AI Scientist ideas."
+        ),
+    )
+    parser.add_argument(
+        "--discovery-output-dir",
+        type=str,
+        default=None,
+        help=(
+            "Audit-mode only: directory where discovery artifacts should be written. "
+            "Defaults to <output_dir>/benchmark_discovery for auto-discovery runs."
+        ),
+    )
+    parser.add_argument(
+        "--discovery-model",
+        type=str,
+        default=DEFAULT_DISCOVERY_MODEL,
+        help="Audit-mode only: model used for automatic benchmark discovery.",
+    )
+    parser.add_argument(
+        "--discovery-max-queries",
+        type=positive_int,
+        default=12,
+        help="Audit-mode only: number of discovery queries to run.",
+    )
+    parser.add_argument(
+        "--discovery-max-candidates",
+        type=positive_int,
+        default=8,
+        help="Audit-mode only: maximum number of discovered benchmark candidates to keep.",
     )
     parser.add_argument(
         "--plan-review",
@@ -216,6 +442,7 @@ def redirect_stdout_stderr_to_file(log_file_path):
 
 
 def validate_arguments(args, parser):
+    args.config_path = resolve_repo_relative_path(args.config_path)
     if args.mode == MODE_AUDIT:
         if args.benchmark is not None:
             if args.load_ideas is not None and args.load_ideas != args.benchmark:
@@ -223,8 +450,9 @@ def validate_arguments(args, parser):
             args.load_ideas = args.benchmark
         if args.audit_run_dir is not None:
             parser.error("audit mode does not accept --audit-run-dir")
-        if args.load_ideas is None:
-            args.load_ideas = DEFAULT_IDEAS_PATH
+        args.load_ideas = resolve_repo_relative_path(args.load_ideas)
+        if args.load_ideas is None and not args.discover_first:
+            args.load_ideas = resolve_repo_relative_path(DEFAULT_IDEAS_PATH)
     else:
         if not args.audit_run_dir:
             parser.error("study mode requires --audit-run-dir")
@@ -238,6 +466,10 @@ def validate_arguments(args, parser):
             parser.error("study mode rejects --add_dataset_ref")
         if args.output_dir is not None:
             parser.error("study mode rejects --output_dir")
+        if args.discover_topic is not None:
+            parser.error("study mode rejects --discover-topic")
+        if args.discovery_output_dir is not None:
+            parser.error("study mode rejects --discovery-output-dir")
 
     return args
 
@@ -284,6 +516,8 @@ def write_audit_run_metadata(
             "study_mode_rejects_raw_benchmark_input": True,
         },
     }
+    if getattr(args, "benchmark_discovery", None) is not None:
+        metadata["benchmark_discovery"] = args.benchmark_discovery
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
     return metadata_path
@@ -305,9 +539,12 @@ def prepare_audit_run(args) -> dict:
     available_gpus = get_available_gpus()
     print(f"Using GPUs: {available_gpus}")
 
-    with open(args.load_ideas, "r") as f:
-        ideas = json.load(f)
-        print(f"Loaded {len(ideas)} pregenerated ideas from {args.load_ideas}")
+    ideas = load_ideas_from_path(args.load_ideas)
+    print(f"Loaded {len(ideas)} pregenerated ideas from {args.load_ideas}")
+    if args.idea_idx >= len(ideas):
+        raise ValueError(
+            f"--idea_idx {args.idea_idx} is out of range for {args.load_ideas}"
+        )
 
     idea = ideas[args.idea_idx]
 
@@ -358,8 +595,20 @@ def prepare_audit_run(args) -> dict:
     if added_code is not None:
         prepared_idea["Code"] = added_code
 
+    benchmark_metadata = prepared_idea.get("Benchmark Metadata")
+    benchmark_files = []
+    if isinstance(benchmark_metadata, dict):
+        benchmark_files = benchmark_metadata.get("files") or []
+    if not benchmark_files:
+        print(
+            "Warning: Benchmark Metadata.files is empty, so no local dataset files were "
+            "staged. Auto-discovered draft specs still need benchmark splits added before "
+            "a real audit can be trusted."
+        )
+
     prepared_idea = augment_idea_with_dataset_context(prepared_idea, idea_dir)
     ideas[args.idea_idx] = prepared_idea
+    dataset_context_staged = "Dataset Context" in prepared_idea
 
     idea_path_json = osp.join(idea_dir, "idea.json")
     with open(idea_path_json, "w") as f:
@@ -371,6 +620,8 @@ def prepare_audit_run(args) -> dict:
         "run_plot_aggregation": False,
         "agent_num_workers": args.audit_num_workers,
         "agent_multi_seed_num_seeds": args.audit_num_workers,
+        "dataset_context_staged": dataset_context_staged,
+        "used_benchmark_discovery": bool(getattr(args, "benchmark_discovery", None)),
     }
     idea_config_path = edit_bfts_config_file(
         args.config_path,
@@ -556,7 +807,7 @@ def _link_or_copy_path(source_path: Path, destination_path: Path) -> None:
 
 
 def publish_audit_artifacts_to_run_dir(idea_dir: str, artifact_dir: Path, report_path: Path) -> None:
-    run_dir = Path(idea_dir)
+    run_dir = Path(idea_dir).resolve()
     promoted_paths = [
         artifact_dir / "dataset_card.md",
         artifact_dir / "audit_results.json",
@@ -577,6 +828,30 @@ def publish_audit_artifacts_to_run_dir(idea_dir: str, artifact_dir: Path, report
     for source_path in promoted_paths:
         if source_path.exists():
             _link_or_copy_path(source_path, run_dir / source_path.name)
+
+
+def _resolve_audit_report_path(
+    *,
+    run_dir: str | Path,
+    artifact_dir: Path,
+    audit_report_path: str | Path | None = None,
+) -> Path:
+    run_dir_path = Path(run_dir).resolve()
+    artifact_dir = artifact_dir.resolve()
+
+    candidates: list[Path] = []
+    if audit_report_path is not None:
+        candidates.append(Path(audit_report_path).resolve())
+    candidates.extend([run_dir_path / "audit_report.md", artifact_dir / "audit_report.md"])
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    raise FileNotFoundError(
+        "Could not locate audit_report.md in the run directory or artifact directory. "
+        f"Checked: {', '.join(str(path) for path in candidates)}"
+    )
 
 
 def generate_audit_report_for_run(idea_dir: str, manager) -> tuple[Path, Path]:
@@ -632,6 +907,7 @@ def run_post_audit_review_and_study_bundle(
     run_dir: str,
     artifact_dir: Path,
     args,
+    audit_report_path: str | Path | None = None,
 ) -> dict:
     from ai_scientist.audits.report_review import (
         ensure_review_passes,
@@ -639,17 +915,23 @@ def run_post_audit_review_and_study_bundle(
     )
     from ai_scientist.audits.study import build_audit_study_bundle
 
-    review_json_path = Path(run_dir) / "audit_report_review.json"
-    review_md_path = Path(run_dir) / "audit_report_review.md"
+    run_dir_path = Path(run_dir).resolve()
+    resolved_report_path = _resolve_audit_report_path(
+        run_dir=run_dir_path,
+        artifact_dir=artifact_dir,
+        audit_report_path=audit_report_path,
+    )
+    review_json_path = run_dir_path / "audit_report_review.json"
+    review_md_path = run_dir_path / "audit_report_review.md"
     review = review_audit_report(
         artifact_dir=artifact_dir,
-        audit_report_path=Path(run_dir) / "audit_report.md",
+        audit_report_path=resolved_report_path,
         output_json_path=review_json_path,
         output_md_path=review_md_path,
     )
     ensure_review_passes(review)
     build_audit_study_bundle(
-        run_dir=run_dir,
+        run_dir=run_dir_path,
         artifact_dir=artifact_dir,
         audit_report_review_path=review_json_path,
         emit_figures_zip=getattr(args, "emit_study_zip", True),
@@ -659,6 +941,10 @@ def run_post_audit_review_and_study_bundle(
 
 def run_audit_mode(args) -> None:
     from ai_scientist.audits.plan_review import ensure_plan_review
+
+    if hasattr(args, "load_ideas") and args.load_ideas is None:
+        autodiscover_benchmark_spec(args)
+
     prepared = prepare_audit_run(args)
     ensure_plan_review(
         output_dir=prepared["idea_dir"],
@@ -704,13 +990,14 @@ def run_audit_mode(args) -> None:
                 dirs_exist_ok=True,
             )
 
-        artifact_dir, _report_path = generate_audit_report_for_run(
+        artifact_dir, report_path = generate_audit_report_for_run(
             prepared["idea_dir"], manager
         )
         run_post_audit_review_and_study_bundle(
             run_dir=prepared["idea_dir"],
             artifact_dir=artifact_dir,
             args=args,
+            audit_report_path=report_path,
         )
     finally:
         save_token_tracker(prepared["idea_dir"])
