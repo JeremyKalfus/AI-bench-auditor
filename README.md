@@ -1,6 +1,6 @@
 # AI-bench-auditor
 
-AI-bench-auditor is a benchmark leakage auditing workflow built on top of the AI Scientist v2 codebase and its agentic tree-search spine. The product surface is audit-first: it prepares deterministic dataset context, generates a research plan, enforces a human approval gate before research begins, prefers structured audit artifacts over prose, reviews the final audit report automatically, and can then package a validated run as a LaTeX paper source bundle with optional PDF output after the verification-stack gate passes.
+AI-bench-auditor is a benchmark leakage auditing workflow built on top of the AI Scientist v2 codebase and its agentic tree-search spine. The product surface is audit-first: it prepares deterministic dataset context, generates a research plan, enforces a human approval gate before research begins, prefers structured audit artifacts over prose, reviews the final audit report automatically, and packages the validated run as a markdown-first study bundle for LLM or human consumption.
 
 The repository still uses the internal Python package path `ai_scientist` for compatibility with the upstream codebase. The intended user-facing workflow, CLI, and documentation in this repository are for AI-bench-auditor.
 
@@ -8,11 +8,11 @@ The repository still uses the internal Python package path `ai_scientist` for co
 
 The tracked repository currently implements:
 
-- `audit` mode for benchmark-input preparation, dataset-context staging, plan review, tree-search execution, artifact-first validation, audit-report generation, report review, and optional paper packaging.
-- `paper` mode that only consumes a prepared audit run directory and refuses raw benchmark input.
+- `audit` mode for benchmark-input preparation, dataset-context staging, plan review, tree-search execution, artifact-first validation, audit-report generation, report review, and study-bundle generation.
+- `study` mode that only consumes a prepared audit run directory and refuses raw benchmark input.
 - deterministic audit ranking in the tree-search journal based on structured artifacts rather than LLM selection.
 - a repo-native verification stack with schema gating, canaries, mutation tests, search ablations, reproducibility checks, and acceptance checks over checked-in verification fixtures.
-- an audit-native manuscript builder that writes `paper.tex`, figures, tables, appendix material, `paper_manifest.json`, optional `paper.pdf`, and `paper_bundle.zip` when the gate conditions are satisfied.
+- a markdown-first study bundle that writes `study_report.md`, `study_bundle_manifest.json`, `study_figures/`, and `study_figures.zip`.
 
 The repository does not claim that every external benchmark workflow has already been empirically validated end to end. The checked-in verification harness is deliberately small and deterministic; real external benchmark staging and generated outputs should remain outside the tracked source tree.
 
@@ -29,13 +29,13 @@ The main audit workflow is:
 7. Choose the best audit branch deterministically.
 8. Generate `audit_report.md` from the validated artifact bundle.
 9. Run an automated report review against the artifact bundle.
-10. Optionally build an audit-native manuscript bundle if the verification-stack gate passes.
+10. Build the markdown-first study bundle for downstream LLM or human review.
 
 The system is intentionally conservative:
 
 - It does not allow research to begin when plan review is required and approval is missing.
-- It does not allow paper generation from invalid audit artifacts or a failing verification summary.
-- It does not fabricate citations, figures, or artifact-backed claims.
+- It does not allow study-bundle generation from invalid audit artifacts or a failing report review.
+- It does not fabricate figures or artifact-backed claims.
 - It prefers deterministic artifacts over LLM prose whenever both exist.
 
 ## Installation
@@ -50,11 +50,6 @@ pip install -r requirements.txt
 
 `requirements.txt` now includes `psutil`, which is used by the launcher for non-dry-run process cleanup.
 
-Optional but recommended for PDF compilation:
-
-- macOS with Homebrew: `brew install texlive`
-- Linux: install a TeX distribution that provides `pdflatex` and `bibtex`
-
 Model and API keys depend on which LLM backends you use. Typical environment variables include:
 
 ```bash
@@ -64,15 +59,14 @@ export S2_API_KEY="YOUR_SEMANTIC_SCHOLAR_KEY"
 
 Notes:
 
-- `citation-mode=provided` is the most reproducible manuscript path because it uses a user-supplied bibliography file.
-- `citation-mode=auto` is supported, but it depends on honest citation resolution and fails if required references cannot be resolved.
-- A real manual audit run still requires a working model backend and a valid benchmark idea/spec. The checked-in tests use deterministic fixtures and targeted monkeypatching where external models would otherwise be required.
+- A real manual audit run still requires a working model backend and a valid benchmark idea/spec.
+- The checked-in tests use deterministic fixtures and targeted monkeypatching where external models would otherwise be required.
 
 ## Run Modes
 
 ### Audit Mode
 
-`audit` mode consumes a raw benchmark idea/spec JSON file and produces a run directory containing dataset context, plan-review artifacts, copied experiment results, promoted audit artifacts, and optional manuscript outputs.
+`audit` mode consumes a raw benchmark idea/spec JSON file and produces a run directory containing dataset context, plan-review artifacts, copied experiment results, promoted audit artifacts, and the final study bundle.
 
 Example:
 
@@ -81,8 +75,7 @@ Example:
   --mode audit \
   --benchmark path/to/benchmark_spec.json \
   --output_dir path/to/run_dir \
-  --plan-review required \
-  --paper-mode on_success
+  --plan-review required
 ```
 
 Useful audit flags:
@@ -93,13 +86,7 @@ Useful audit flags:
 - `--plan-approval-file PATH`
 - `--approve-plan`
 - `--max-plan-revisions N`
-- `--paper-mode {off,on_success,always_if_valid}`
-- `--emit-paper-zip` or `--no-emit-paper-zip`
-- `--compile-paper-pdf` or `--no-compile-paper-pdf`
-- `--allow-source-only`
-- `--citation-mode {auto,provided,off}`
-- `--references-file PATH`
-- `--verification-stack-results PATH`
+- `--emit-study-zip` or `--no-emit-study-zip`
 
 Behavioral contract:
 
@@ -108,25 +95,21 @@ Behavioral contract:
 - In non-interactive settings, approval must come from explicit approval flags or files.
 - Once the plan is approved, the rest of the run proceeds automatically.
 
-### Paper Mode
+### Study Mode
 
-`paper` mode consumes a previously prepared audit run directory. It refuses raw benchmark input and reruns the report-review plus manuscript stages against the resolved audit artifact bundle.
+`study` mode consumes a previously prepared audit run directory. It refuses raw benchmark input and reruns the report-review plus study-bundle stages against the resolved audit artifact bundle.
 
 Example:
 
 ```bash
 .venv-benchmark-audit/bin/python launch_scientist_bfts.py \
-  --mode paper \
-  --audit-run-dir path/to/run_dir \
-  --citation-mode provided \
-  --references-file path/to/references.bib
+  --mode study \
+  --audit-run-dir path/to/run_dir
 ```
-
-By default, paper generation looks for `verification_results/latest/verification_stack_results.json`. Use `--verification-stack-results PATH` to point the gate at a different verification summary.
 
 ## Expected Run Outputs
 
-A successful audit-mode run with paper packaging enabled should leave behind at least:
+A successful audit-mode run should leave behind at least:
 
 - `idea.json`
 - `bfts_config.yaml`
@@ -145,14 +128,10 @@ A successful audit-mode run with paper packaging enabled should leave behind at 
 - `audit_report_review.md`
 - `experiment_results/`
 - `evidence/` when evidence files exist
-- `paper/paper.tex`
-- `paper/references.bib`
-- `paper/figures/`
-- `paper/tables/`
-- `paper/appendix/`
-- `paper/paper_manifest.json`
-- optional `paper/paper.pdf` when a LaTeX toolchain is available and compilation succeeds
-- `paper_bundle.zip` when zip emission is enabled
+- `study_report.md`
+- `study_bundle_manifest.json`
+- `study_figures/`
+- `study_figures.zip` when zip emission is enabled
 
 Top-level promoted artifacts may be symlinked or copied from the winning bundle under `experiment_results/`.
 
@@ -193,24 +172,16 @@ What the verification stack covers:
 - reproducibility checks across repeated `full_tree_search` runs
 - acceptance checks over checked-in verification benchmarks
 
-The launcher’s paper-generation gate reads the verification summary and requires:
-
-- overall verification status `passed`
-- schema gate `passed`
-- canary summary `passed`
-- mutation summary `passed`
-- search ablation summary `passed`
-- `full_tree_search_adds_value = true`
-- reproducibility summary `passed`
+The verification stack remains a repo-native correctness signal for the audit workflow and its checked-in fixtures. It is no longer a LaTeX/paper gate because the final product surface is the study bundle.
 
 ## Repository Map
 
 Key implementation areas:
 
-- `launch_scientist_bfts.py`: top-level CLI, run-mode validation, plan-review orchestration, artifact promotion, report review, paper-generation gate, and manuscript handoff.
-- `ai_scientist/audits/`: audit-native schemas, dataset context, research-plan generation, plan-review logic, artifact validation, detectors, scoring, reporting, report review, manuscript generation, and verification stack.
+- `launch_scientist_bfts.py`: top-level CLI, run-mode validation, plan-review orchestration, artifact promotion, report review, and study-bundle handoff.
+- `ai_scientist/audits/`: audit-native schemas, dataset context, research-plan generation, plan-review logic, artifact validation, detectors, scoring, reporting, report review, study-bundle generation, and verification stack.
 - `ai_scientist/treesearch/`: reused tree-search engine adapted for audit prompts, artifact-first execution parsing, audit-stage completion, and deterministic audit ranking.
-- `tests/`: fixture-backed unit and integration coverage for the audit path, verification stack, report review, manuscript bundle, and single-command flow.
+- `tests/`: fixture-backed unit and integration coverage for the audit path, verification stack, report review, study bundle, and single-command flow.
 - `tests/fixtures/verification/`: checked-in registry plus deterministic acceptance and mutation datasets used by the verification harness.
 
 ## Supporting Docs
@@ -228,4 +199,4 @@ AI-bench-auditor is built on top of the AI Scientist v2 repository and continues
 
 ## License And Responsible Use
 
-This repository remains subject to the upstream project license unless and until that license is replaced explicitly. Because the system executes LLM-written code and can produce publication-ready artifacts, it should be run in a controlled environment with careful human oversight.
+This repository remains subject to the upstream project license unless and until that license is replaced explicitly. Because the system executes LLM-written code and can produce reviewer-facing audit artifacts, it should be run in a controlled environment with careful human oversight.

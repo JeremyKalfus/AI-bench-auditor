@@ -184,7 +184,7 @@ def _load_reference_entries(
         return entries
 
     unresolved_required: list[str] = []
-    for need in review["citation_needs"]:
+    for need in review.get("citation_needs", []):
         papers = search_for_papers(need["query"], result_limit=5) or []
         selected = _select_reference_for_query(need["query"], papers)
         if selected is None:

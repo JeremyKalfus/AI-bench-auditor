@@ -256,7 +256,6 @@ def _render_review_markdown(review: dict[str, Any]) -> str:
         f"- Review status: `{review['status']}`",
         f"- Regenerated report: `{review['regenerated_report']}`",
         f"- Blocking issues: {review['blocking_issue_count']}",
-        f"- Citation needs: {len(review['citation_needs'])}",
         "",
         "## Issues",
     ]
@@ -273,12 +272,6 @@ def _render_review_markdown(review: dict[str, Any]) -> str:
     for opportunity in review["figure_table_opportunities"]:
         lines.append(
             f"- {opportunity['type']}: `{opportunity['name']}` because {opportunity['reason']}"
-        )
-
-    lines.extend(["", "## Citation Needs"])
-    for need in review["citation_needs"]:
-        lines.append(
-            f"- Query: `{need['query']}`. Required={need['required']}. Reason: {need['reason']}"
         )
 
     return "\n".join(lines) + "\n"
@@ -336,5 +329,5 @@ def ensure_review_passes(review: dict[str, Any]) -> None:
     if review["status"] != "passed":
         messages = "; ".join(issue["message"] for issue in review["issues"])
         raise AuditArtifactError(
-            "Audit report review failed; manuscript generation is blocked. " + messages
+            "Audit report review failed; study bundle generation is blocked. " + messages
         )

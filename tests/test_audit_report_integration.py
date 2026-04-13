@@ -53,9 +53,7 @@ def write_findings_csv(path: Path) -> None:
     ).to_csv(path, index=False)
 
 
-def test_run_audit_mode_generates_audit_report_without_paper_outputs(
-    tmp_path, monkeypatch
-):
+def test_run_audit_mode_generates_audit_and_study_outputs(tmp_path, monkeypatch):
     repo_root = Path(__file__).resolve().parents[1]
     launcher = load_launcher(repo_root)
 
@@ -167,9 +165,6 @@ def test_run_audit_mode_generates_audit_report_without_paper_outputs(
     def fake_perform_experiments_bfts(config_path):
         return manager
 
-    def fail_paper_mode(*args, **kwargs):
-        raise AssertionError("paper writeup/review should not run in audit mode")
-
     fake_runner_module = types.ModuleType(
         "ai_scientist.treesearch.perform_experiments_bfts_with_agentmanager"
     )
@@ -177,7 +172,6 @@ def test_run_audit_mode_generates_audit_report_without_paper_outputs(
 
     monkeypatch.setattr(launcher, "prepare_audit_run", fake_prepare_audit_run)
     monkeypatch.setattr(launcher, "save_token_tracker", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(launcher, "run_paper_writeup_and_review", fail_paper_mode)
     monkeypatch.setitem(
         sys.modules,
         "ai_scientist.treesearch.perform_experiments_bfts_with_agentmanager",
@@ -193,12 +187,7 @@ def test_run_audit_mode_generates_audit_report_without_paper_outputs(
             plan_approval_file=None,
             approve_plan=False,
             max_plan_revisions=3,
-            paper_mode="off",
-            citation_mode="provided",
-            references_file=None,
-            compile_paper_pdf=False,
-            allow_source_only=True,
-            emit_paper_zip=False,
+            emit_study_zip=True,
         )
     )
 
@@ -218,3 +207,6 @@ def test_run_audit_mode_generates_audit_report_without_paper_outputs(
     assert (idea_dir / "research_plan.json").exists()
     assert (idea_dir / "plan_approval.json").exists()
     assert (idea_dir / "audit_report_review.json").exists()
+    assert (idea_dir / "study_report.md").exists()
+    assert (idea_dir / "study_bundle_manifest.json").exists()
+    assert (idea_dir / "study_figures.zip").exists()

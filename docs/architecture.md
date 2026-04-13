@@ -1,6 +1,6 @@
 # AI-bench-auditor Architecture
 
-This document describes the implemented architecture of AI-bench-auditor as it exists in the repository today. It is intended to be the technical reference for the README, the verification guide, and the execution log.
+This document describes the implemented architecture of AI-bench-auditor as it exists in the repository today. It is the current technical reference for the CLI flow, artifact contracts, and the markdown-first study bundle surface.
 
 ## Design Goals
 
@@ -9,8 +9,7 @@ The system is built around a few non-negotiable constraints:
 - benchmark audits must be grounded in deterministic, machine-validated artifacts
 - human approval must happen before research begins when plan review is required
 - audit-mode branch acceptance must not depend primarily on LLM narration of stdout
-- paper generation must consume a validated audit run, never raw benchmark inputs
-- manuscript outputs must be blocked when the verification-stack summary does not pass the required preconditions
+- the final user-facing output should be easy for another LLM or human reviewer to consume directly
 - the tracked repository must stay runnable in local development without requiring large external benchmark downloads
 
 ## High-Level System Shape
@@ -18,13 +17,13 @@ The system is built around a few non-negotiable constraints:
 At a high level, the repository has four cooperating layers:
 
 1. Control plane
-   `launch_scientist_bfts.py` validates CLI arguments, prepares run directories, triggers plan review, orchestrates audit versus paper mode, promotes artifacts, runs report review, and enforces manuscript gates.
+   `launch_scientist_bfts.py` validates CLI arguments, prepares run directories, triggers plan review, orchestrates audit versus study mode, promotes artifacts, runs report review, and builds the study bundle.
 2. Search plane
    `ai_scientist/treesearch/` provides the reused AI Scientist v2 search loop, but audit tasks replace training-centric stage goals, prompts, node parsing, and ranking logic.
 3. Artifact plane
-   `ai_scientist/audits/` defines schemas, dataset context, plan-review contracts, artifact validators, reports, report review, manuscript generation, and the deterministic verification stack.
+   `ai_scientist/audits/` defines schemas, dataset context, plan-review contracts, artifact validators, reports, report review, study-bundle generation, and supporting output utilities.
 4. Verification plane
-   `ai_scientist.audits.verification` materializes deterministic audit bundles from checked-in fixtures and produces the summary artifact consumed by the manuscript gate.
+   `ai_scientist.audits.verification` materializes deterministic audit bundles from checked-in fixtures and produces the summary artifacts used to verify audit correctness and search quality in development and CI.
 
 ```mermaid
 flowchart TD
@@ -38,10 +37,10 @@ flowchart TD
   Artifacts --> Rank["Journal deterministic ranking"]
   Rank --> Report["report.py"]
   Report --> Review["report_review.py"]
-  Review --> Gate["ensure_paper_generation_preconditions"]
-  Gate --> Manuscript["manuscript.py"]
-  CLI --> Paper["paper mode"]
-  Paper --> Review
+  Review --> Study["study.py"]
+  CLI --> StudyMode["study mode"]
+  StudyMode --> Review
+  StudyMode --> Study
 ```
 
 ## Major Modules
@@ -49,7 +48,7 @@ flowchart TD
 ### Launcher and orchestration
 
 - `launch_scientist_bfts.py`
-  - parses `audit` and `paper` modes
+  - parses `audit` and `study` modes
   - prepares an audit run directory and copied config
   - enriches the idea/spec with dataset context
   - enforces plan review through `ensure_plan_review(...)`
@@ -57,8 +56,8 @@ flowchart TD
   - promotes the winning bundle’s artifacts to the top-level run directory
   - generates `audit_report.md`
   - runs automated report review
-  - blocks or allows manuscript generation based on the verification summary
-  - resolves nested artifact bundles when paper mode is run against an older or partially promoted run directory
+  - builds the final `study_report.md`, `study_bundle_manifest.json`, and optional `study_figures.zip`
+  - resolves nested artifact bundles when `study` mode is run against an older or partially promoted run directory
 
 ### Audit artifact and workflow modules
 
@@ -85,10 +84,11 @@ flowchart TD
 - `ai_scientist/audits/report.py`
   - generates deterministic `audit_report.md` directly from validated artifact paths
 - `ai_scientist/audits/report_review.py`
-  - checks that the report contains the evidence-backed sections and wording required for manuscript eligibility
+  - checks that the report contains the evidence-backed sections and wording required for final bundle eligibility
   - optionally regenerates the report if the issues are fixable
-- `ai_scientist/audits/manuscript.py`
-  - builds `paper.tex`, tables, figures, references, appendix material, `paper_manifest.json`, and optional `paper.pdf`
+- `ai_scientist/audits/study.py`
+  - generates `study_report.md`, `study_bundle_manifest.json`, `study_figures/`, and optional `study_figures.zip`
+  - embeds raw methodology and artifact references so the output is LLM-readable without LaTeX or PDF conversion
 - `ai_scientist/audits/verification.py`
   - runs the repo-native verification stack and writes `verification_stack_results.json`
 
@@ -112,7 +112,7 @@ flowchart TD
 
 ### 1. CLI parsing and argument validation
 
-`launch_scientist_bfts.py` accepts `--mode audit` and `--mode paper`. Audit mode consumes a benchmark idea/spec JSON; paper mode requires an `audit_run_dir` containing `audit_run_metadata.json`.
+`launch_scientist_bfts.py` accepts `--mode audit` and `--mode study`. Audit mode consumes a benchmark idea/spec JSON; study mode requires an `audit_run_dir` containing `audit_run_metadata.json`.
 
 ### 2. Audit run preparation
 
@@ -231,143 +231,86 @@ Promoted artifacts include:
 
 The promoted paths may be symlinks or copies.
 
-### 10. Report review and manuscript gate
+### 10. Report review and study bundle
 
-`run_post_audit_review_and_paper(...)` always runs report review first.
+`run_post_audit_review_and_study_bundle(...)` runs report review first.
 
 It writes:
 
 - `audit_report_review.json`
 - `audit_report_review.md`
 
-If `paper_mode` is not `off`, the launcher then evaluates the verification summary through `ensure_paper_generation_preconditions(...)`.
+If review passes, the launcher then builds the study surface through `build_audit_study_bundle(...)`.
 
-The manuscript stage only runs if:
+The study stage writes:
 
-- overall verification status is `passed`
-- schema gate passed
-- canary summary passed
-- mutation summary passed
-- search ablation summary passed
-- search ablation reports `full_tree_search_adds_value = true`
-- reproducibility summary passed
+- `study_report.md`
+- `study_bundle_manifest.json`
+- `study_figures/`
+- optional `study_figures.zip`
 
-## Paper-Mode Lifecycle
+The study report is intentionally markdown-first and artifact-linked. It includes methodology, run metadata, split inventory, detector coverage, findings, evidence registry, remediation deltas, report-review status, figure inventory, and embedded copies of key markdown artifacts such as the research plan and dataset card.
 
-Paper mode is intentionally narrower than audit mode.
+## Study-Mode Lifecycle
+
+Study mode is intentionally narrower than audit mode.
 
 Inputs:
 
-- `audit_run_dir`
-- optional citation and PDF flags
-- optional `verification_stack_results.json` override
+- a validated audit run directory
+- top-level promoted artifacts or a single resolvable artifact bundle under `experiment_results/`
 
 Behavior:
 
-- validate that the run directory really came from audit mode
-- locate the active artifact bundle
-- promote nested artifacts to the top-level run directory if needed
-- rerun audit-report review
-- reapply the verification gate
-- build the manuscript bundle
+- validates the run contract through `audit_run_metadata.json`
+- resolves the active artifact bundle
+- republishes promoted artifacts to the run root if needed
+- reruns `review_audit_report(...)`
+- rebuilds the markdown-first study bundle
 
-Paper mode never accepts raw benchmark input directly.
+Study mode does not accept raw benchmark input.
 
-## Run Directory Contract
+## Expected Run Layout
 
-A typical run directory looks like:
+An audit run typically contains:
 
 ```text
 run_dir/
-  idea.json
-  idea.md
-  bfts_config.yaml
   audit_run_metadata.json
+  bfts_config.yaml
+  idea.json
   dataset_card.md
   research_plan.json
   research_plan.md
   plan_review_state.json
   plan_approval.json
-  experiment_results/
-    experiment_node-.../
-      audit_results.json
-      split_manifest.json
-      findings.csv
-      metrics_before_after.json
-      audit_report.md
-      evidence/
   audit_results.json
   split_manifest.json
   findings.csv
+  metrics_before_after.json
   audit_report.md
   audit_report_review.json
   audit_report_review.md
+  study_report.md
+  study_bundle_manifest.json
+  study_figures/
+  study_figures.zip
+  experiment_results/
   evidence/
-  paper/
-  paper_bundle.zip
 ```
-
-The top-level artifact set is intentionally easy for a human reviewer to inspect without digging into the nested search logs.
-
-## Verification Stack Architecture
-
-The repo-native verification stack exists to keep the core acceptance logic deterministic and runnable in local development and CI.
-
-Default phases:
-
-1. Canary suite
-   Uses generated canary cases for exact duplicates, near duplicates, group overlap, temporal leakage, preprocessing leakage, suspicious-feature leakage, and a clean negative control.
-2. Mutation harness
-   Injects one leakage mode at a time into a clean benchmark base and measures recovery.
-3. Search ablation
-   Compares `detector_only`, `one_shot_agent`, and `full_tree_search`.
-4. Reproducibility
-   Repeats `full_tree_search` multiple times and checks material consistency.
-5. Acceptance
-   Runs repo-native acceptance benchmarks and writes acceptance reports.
-6. Schema gate
-   Validates all generated bundles and summary artifacts.
-
-The default registry lives at `tests/fixtures/verification/registry.json`.
-
-## External Dependencies and Runtime Assumptions
-
-Core runtime dependencies are declared in `requirements.txt`, including:
-
-- `pandas`
-- `scikit-learn`
-- `pyarrow`
-- `duckdb`
-- `rapidfuzz`
-- `psutil`
-
-Optional runtime capabilities:
-
-- TeX toolchain for PDF compilation
-- model/API credentials for live LLM-backed search
-- real benchmark data staged outside the tracked tree
-
-`cleanup_processes()` now tolerates a missing `psutil` import, but the dependency is still declared because non-dry-run cleanup is expected to use it.
-
-## Known Boundaries
-
-- The verification harness is repo-native and fixture-based by design. It is a strong local correctness gate, not a universal benchmark-validation claim.
-- The supplemental real-benchmark inspection memo under `docs/artifact_inspection_real_benchmark.md` documents local ignored runs under `downloads/`; it is not part of the tracked default verification path.
-- Legacy non-audit AI Scientist codepaths remain in the repository for compatibility, but the user-facing benchmark-audit flow is defined by the audit-specific path described here.
 
 ## Extension Points
 
-Common places to extend the system safely:
+Current extension points include:
 
-- add new deterministic detectors in `ai_scientist/audits/detectors.py`
-- extend schemas in `ai_scientist/audits/schema.py`
-- add new verification benchmarks under `tests/fixtures/verification/`
-- strengthen manuscript sections in `ai_scientist/audits/manuscript.py`
-- refine audit-stage goals and completion rules in `ai_scientist/treesearch/agent_manager.py`
+- adding new detectors in `ai_scientist/audits/detectors.py`
+- tightening schema requirements in `ai_scientist/audits/schema.py`
+- refining report-review criteria in `ai_scientist/audits/report_review.py`
+- expanding figure generation or markdown bundle sections in `ai_scientist/audits/study.py`
+- extending deterministic verification benchmarks under `tests/fixtures/verification/`
 
-When adding new behavior, the safest pattern is:
+## Operational Notes
 
-1. define or extend the artifact contract first
-2. add deterministic validators and tests
-3. wire the new artifact into audit parsing and ranking
-4. update the verification stack and docs together
+- The final product surface is `study_report.md` plus the raw JSON/CSV artifacts and figure zip, not LaTeX or PDF outputs.
+- The verification stack remains useful for local correctness and search-quality regression detection, but the final study bundle is built directly from validated audit artifacts and report review rather than document-compilation tooling.
+- Real external benchmark runs should still live outside the tracked source tree.

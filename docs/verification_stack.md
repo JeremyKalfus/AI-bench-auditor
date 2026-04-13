@@ -1,6 +1,6 @@
 # Verification Stack
 
-The repository includes a deterministic, repo-native verification harness in `ai_scientist.audits.verification`. Its job is to prove that the audit pipeline, artifact contracts, and manuscript gate behave consistently in local development and CI.
+The repository includes a deterministic, repo-native verification harness in `ai_scientist.audits.verification`. Its job is to prove that the audit pipeline, artifact contracts, detector behavior, and search-quality signals behave consistently in local development and CI.
 
 ## Scope
 
@@ -57,21 +57,23 @@ Search-ablation and reproducibility phases also materialize validated audit bund
 - `audit_report.md`
 - `evidence/`
 
-## Paper-Generation Gate
+## How It Relates To The Product Surface
 
-`launch_scientist_bfts.py` consumes `verification_stack_results.json` when paper packaging is enabled. By default it looks at `verification_results/latest/verification_stack_results.json`.
+The final user-facing output surface is the study bundle:
 
-Paper generation is blocked unless all of the following are true in the chosen summary:
+- `study_report.md`
+- `study_bundle_manifest.json`
+- `study_figures/`
+- optional `study_figures.zip`
 
-- `status == "passed"`
-- `phases.schema_gate.passed == true`
-- `phases.canary.summary.passed == true`
-- `phases.mutation.summary.passed == true`
-- `phases.ablation.summary.passed == true`
-- `phases.ablation.summary.full_tree_search_adds_value == true`
-- `phases.reproducibility.summary.passed == true`
+The verification stack does not generate those outputs directly. Instead, it gives the repository a deterministic way to test:
 
-This is intentionally stricter than "a summary file exists." The manuscript path requires both artifact correctness and evidence that tree search is adding value in the checked-in verification harness.
+- whether audit artifacts remain schema-valid
+- whether expected detectors still fire on fixture benchmarks
+- whether remediation deltas and reproducibility summaries remain coherent
+- whether full tree search still adds value relative to simpler baselines in the checked-in harness
+
+In other words, verification is a correctness and regression surface, while the study bundle is the user-facing output surface.
 
 ## Default Benchmarks
 

@@ -166,8 +166,8 @@ def generate_audit_report(
         [
             "",
             "## Workflow Guard",
-            "- Audit mode only generates deterministic audit artifacts and this markdown report.",
-            "- `.tex` and `.pdf` outputs remain disabled until the later verification phases pass and paper mode is invoked on a validated audit run.",
+            "- Audit mode generates deterministic audit artifacts, this markdown report, and a markdown-first study bundle.",
+            "- The intended product surface is `study_report.md` plus the structured artifacts and `study_figures.zip`, not LaTeX or PDF output.",
         ]
     )
 

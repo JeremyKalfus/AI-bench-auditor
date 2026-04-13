@@ -27,6 +27,7 @@ from .schema import (
     validate_provenance_block,
     validate_split_manifest,
 )
+from .study import build_audit_study_bundle
 from .verification import (
     load_verification_benchmark,
     materialize_verification_audit_bundle,
@@ -53,6 +54,7 @@ __all__ = [
     "build_example_provenance",
     "build_provenance_block",
     "build_example_split_manifest",
+    "build_audit_study_bundle",
     "load_canary_suite",
     "load_verification_benchmark",
     "materialize_verification_audit_bundle",

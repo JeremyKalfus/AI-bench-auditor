@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 MODE_AUDIT = "audit"
-MODE_PAPER = "paper"
+MODE_STUDY = "study"
 DEFAULT_IDEAS_PATH = "ai_scientist/ideas/i_cant_believe_its_not_better.json"
 DEFAULT_CONFIG_PATH = "bfts_config.yaml"
 AUDIT_RUN_METADATA_FILE = "audit_run_metadata.json"
@@ -45,19 +45,22 @@ def save_token_tracker(idea_dir):
 
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(
-        description="Run AI-bench-auditor in explicit audit or paper mode."
+        description="Run AI-bench-auditor in explicit audit or study mode."
     )
     parser.add_argument(
         "--mode",
         type=str,
-        choices=[MODE_AUDIT, MODE_PAPER],
+        choices=[MODE_AUDIT, MODE_STUDY],
         default=MODE_AUDIT,
-        help="Run mode. `audit` consumes raw benchmark inputs; `paper` consumes a prepared audit run directory.",
+        help=(
+            "Run mode. `audit` consumes raw benchmark inputs; `study` consumes a prepared "
+            "audit run directory and rebuilds the markdown-first study bundle."
+        ),
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate arguments, materialize audit-mode scaffolding, print effective settings, and exit without running experiments or writeup.",
+        help="Validate arguments, materialize audit-mode scaffolding, print effective settings, and exit without running experiments.",
     )
     parser.add_argument(
         "--config-path",
@@ -69,20 +72,13 @@ def parse_arguments(argv=None):
         "--audit-run-dir",
         type=str,
         default=None,
-        help="Paper-mode only: path to a prepared audit run directory.",
+        help="Study-mode only: path to a prepared audit run directory.",
     )
     parser.add_argument(
         "--audit-num-workers",
         type=positive_int,
         default=1,
         help="Audit-mode only: override `agent.num_workers` in the copied BFTS config. Defaults to 1 for Apple Silicon safety.",
-    )
-    parser.add_argument(
-        "--writeup-type",
-        type=str,
-        default="icbinb",
-        choices=["normal", "icbinb"],
-        help="Type of writeup to generate (normal=8 page, icbinb=4 page).",
     )
     parser.add_argument(
         "--benchmark",
@@ -156,108 +152,16 @@ def parse_arguments(argv=None):
         help="Audit-mode only: maximum number of plan review rounds including the initial plan.",
     )
     parser.add_argument(
-        "--paper-mode",
-        type=str,
-        choices=["off", "on_success", "always_if_valid"],
-        default="on_success",
-        help="Audit-mode post-processing policy for audit-native manuscript generation.",
-    )
-    parser.add_argument(
-        "--emit-paper-zip",
+        "--emit-study-zip",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable or disable emission of paper_bundle.zip.",
-    )
-    parser.add_argument(
-        "--compile-paper-pdf",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Attempt PDF compilation when a LaTeX toolchain is available.",
-    )
-    parser.add_argument(
-        "--allow-source-only",
-        action="store_true",
-        help="Permit the manuscript stage to succeed without paper.pdf if compilation fails after being attempted.",
-    )
-    parser.add_argument(
-        "--citation-mode",
-        type=str,
-        choices=["auto", "provided", "off"],
-        default="auto",
-        help="How the audit-native manuscript stage should source citations.",
-    )
-    parser.add_argument(
-        "--references-file",
-        type=str,
-        default=None,
-        help="Optional BibTeX file used by the audit-native manuscript stage.",
-    )
-    parser.add_argument(
-        "--verification-stack-results",
-        type=str,
-        default=None,
-        help=(
-            "Path to verification_stack_results.json used to gate paper generation. "
-            "Defaults to verification_results/latest/verification_stack_results.json under the repo root."
-        ),
-    )
-    parser.add_argument(
-        "--writeup-retries",
-        type=int,
-        default=3,
-        help="Number of writeup attempts to try.",
+        help="Enable or disable emission of study_figures.zip.",
     )
     parser.add_argument(
         "--attempt_id",
         type=int,
         default=0,
         help="Attempt ID, used to distinguish same idea in different attempts in parallel runs.",
-    )
-    parser.add_argument(
-        "--model_agg_plots",
-        type=str,
-        default="o3-mini-2025-01-31",
-        help="Model to use for plot aggregation.",
-    )
-    parser.add_argument(
-        "--model_writeup",
-        type=str,
-        default="o1-preview-2024-09-12",
-        help="Model to use for writeup.",
-    )
-    parser.add_argument(
-        "--model_citation",
-        type=str,
-        default="gpt-4o-2024-11-20",
-        help="Model to use for citation gathering.",
-    )
-    parser.add_argument(
-        "--num_cite_rounds",
-        type=int,
-        default=20,
-        help="Number of citation rounds to perform.",
-    )
-    parser.add_argument(
-        "--model_writeup_small",
-        type=str,
-        default="gpt-4o-2024-05-13",
-        help="Smaller model to use for writeup.",
-    )
-    parser.add_argument(
-        "--model_review",
-        type=str,
-        default="gpt-4o-2024-11-20",
-        help="Model to use for review main text and captions.",
-    )
-    parser.add_argument(
-        "--skip_writeup",
-        action="store_true",
-        help="If set, skip the writeup process.",
-    )
-    parser.add_argument(
-        "--skip_review",
-        action="store_true",
-        help="If set, skip the review process.",
     )
     return parser.parse_args(argv), parser
 
@@ -323,17 +227,17 @@ def validate_arguments(args, parser):
             args.load_ideas = DEFAULT_IDEAS_PATH
     else:
         if not args.audit_run_dir:
-            parser.error("paper mode requires --audit-run-dir")
+            parser.error("study mode requires --audit-run-dir")
         if args.load_ideas is not None or args.benchmark is not None:
             parser.error(
-                "paper mode rejects raw benchmark input such as --load_ideas/--benchmark; pass --audit-run-dir instead"
+                "study mode rejects raw benchmark input such as --load_ideas/--benchmark; pass --audit-run-dir instead"
             )
         if args.load_code:
-            parser.error("paper mode rejects --load_code")
+            parser.error("study mode rejects --load_code")
         if args.add_dataset_ref:
-            parser.error("paper mode rejects --add_dataset_ref")
+            parser.error("study mode rejects --add_dataset_ref")
         if args.output_dir is not None:
-            parser.error("paper mode rejects --output_dir")
+            parser.error("study mode rejects --output_dir")
 
     return args
 
@@ -369,15 +273,15 @@ def write_audit_run_metadata(
         "idea_json_path": idea_path_json,
         "run_config_path": idea_config_path,
         "runtime_settings": runtime_settings,
-        "review_and_paper_settings": {
+        "review_and_output_settings": {
+            "output_surface": "study_bundle",
             "plan_review": getattr(args, "plan_review", "required"),
             "plan_review_mode": getattr(args, "plan_review_mode", "interactive"),
-            "paper_mode": getattr(args, "paper_mode", "on_success"),
-            "citation_mode": getattr(args, "citation_mode", "auto"),
+            "emit_study_zip": getattr(args, "emit_study_zip", True),
         },
-        "paper_handoff_contract": {
-            "paper_mode_requires_audit_run_dir": True,
-            "paper_mode_rejects_raw_benchmark_input": True,
+        "study_handoff_contract": {
+            "study_mode_requires_audit_run_dir": True,
+            "study_mode_rejects_raw_benchmark_input": True,
         },
     }
     with open(metadata_path, "w") as f:
@@ -496,13 +400,13 @@ def validate_audit_run_dir(audit_run_dir: str) -> tuple[str, dict]:
     resolved_dir = str(Path(audit_run_dir).resolve())
     if not osp.isdir(resolved_dir):
         raise ValueError(
-            f"paper mode requires an audit run directory, but got: {audit_run_dir}"
+            f"study mode requires an audit run directory, but got: {audit_run_dir}"
         )
 
     metadata_path = osp.join(resolved_dir, AUDIT_RUN_METADATA_FILE)
     if not osp.exists(metadata_path):
         raise ValueError(
-            f"paper mode requires {AUDIT_RUN_METADATA_FILE} in {resolved_dir}"
+            f"study mode requires {AUDIT_RUN_METADATA_FILE} in {resolved_dir}"
         )
 
     with open(metadata_path, "r") as f:
@@ -510,7 +414,7 @@ def validate_audit_run_dir(audit_run_dir: str) -> tuple[str, dict]:
 
     if metadata.get("mode") != MODE_AUDIT:
         raise ValueError(
-            f"paper mode only accepts audit runs, but {metadata_path} declared mode={metadata.get('mode')!r}"
+            f"study mode only accepts audit runs, but {metadata_path} declared mode={metadata.get('mode')!r}"
         )
 
     return resolved_dir, metadata
@@ -723,68 +627,17 @@ def _resolve_run_artifact_dir(run_dir: str | Path) -> Path:
     )
 
 
-def _default_verification_stack_results_path() -> Path:
-    return (
-        Path(__file__).resolve().parent
-        / "verification_results"
-        / "latest"
-        / "verification_stack_results.json"
-    )
-
-
-def ensure_paper_generation_preconditions(
-    verification_stack_results_path: str | Path | None,
-) -> dict:
-    results_path = (
-        Path(verification_stack_results_path).expanduser().resolve()
-        if verification_stack_results_path
-        else _default_verification_stack_results_path().resolve()
-    )
-    if not results_path.exists():
-        raise ValueError(
-            "paper generation is blocked until Phase 12.1 preconditions pass; "
-            f"missing verification stack summary at {results_path}"
-        )
-
-    verification = json.loads(results_path.read_text())
-    phases = verification.get("phases", {})
-    ablation_summary = phases.get("ablation", {}).get("summary", {})
-    failures = []
-    if verification.get("status") != "passed":
-        failures.append("overall verification stack status is not `passed`")
-    if not phases.get("schema_gate", {}).get("passed"):
-        failures.append("schema gate has not passed")
-    if not phases.get("canary", {}).get("summary", {}).get("passed"):
-        failures.append("canary suite has not passed")
-    if not phases.get("mutation", {}).get("summary", {}).get("passed"):
-        failures.append("mutation thresholds have not passed")
-    if not ablation_summary.get("passed"):
-        failures.append("search ablation has not passed")
-    if not ablation_summary.get("full_tree_search_adds_value"):
-        failures.append("search ablation does not show tree search adds value")
-    if not phases.get("reproducibility", {}).get("summary", {}).get("passed"):
-        failures.append("reproducibility has not passed")
-
-    if failures:
-        raise ValueError(
-            "paper generation is blocked until Phase 12.1 preconditions pass: "
-            + "; ".join(failures)
-            + f". See {results_path}"
-        )
-    return {"path": str(results_path), "verification": verification}
-
-
-def run_post_audit_review_and_paper(
+def run_post_audit_review_and_study_bundle(
     *,
     run_dir: str,
     artifact_dir: Path,
     args,
 ) -> dict:
-    from ai_scientist.audits.manuscript import build_audit_manuscript_bundle
     from ai_scientist.audits.report_review import (
         ensure_review_passes,
         review_audit_report,
     )
+    from ai_scientist.audits.study import build_audit_study_bundle
 
     review_json_path = Path(run_dir) / "audit_report_review.json"
     review_md_path = Path(run_dir) / "audit_report_review.md"
@@ -795,22 +648,11 @@ def run_post_audit_review_and_paper(
         output_md_path=review_md_path,
     )
     ensure_review_passes(review)
-
-    if getattr(args, "paper_mode", "on_success") == "off":
-        return review
-
-    ensure_paper_generation_preconditions(
-        getattr(args, "verification_stack_results", None)
-    )
-    build_audit_manuscript_bundle(
+    build_audit_study_bundle(
         run_dir=run_dir,
         artifact_dir=artifact_dir,
         audit_report_review_path=review_json_path,
-        citation_mode=getattr(args, "citation_mode", "auto"),
-        references_file=getattr(args, "references_file", None),
-        compile_pdf=getattr(args, "compile_paper_pdf", True),
-        allow_source_only=getattr(args, "allow_source_only", False),
-        emit_paper_zip=getattr(args, "emit_paper_zip", True),
+        emit_figures_zip=getattr(args, "emit_study_zip", True),
     )
     return review
 
@@ -865,7 +707,7 @@ def run_audit_mode(args) -> None:
         artifact_dir, _report_path = generate_audit_report_for_run(
             prepared["idea_dir"], manager
         )
-        run_post_audit_review_and_paper(
+        run_post_audit_review_and_study_bundle(
             run_dir=prepared["idea_dir"],
             artifact_dir=artifact_dir,
             args=args,
@@ -874,7 +716,7 @@ def run_audit_mode(args) -> None:
         save_token_tracker(prepared["idea_dir"])
 
 
-def run_paper_mode(args) -> None:
+def run_study_mode(args) -> None:
     set_ai_scientist_root()
 
     audit_run_dir, metadata = validate_audit_run_dir(args.audit_run_dir)
@@ -886,9 +728,8 @@ def run_paper_mode(args) -> None:
                 "artifact_dir": str(artifact_dir),
                 "dry_run": True,
                 "metadata_mode": metadata.get("mode"),
-                "mode": MODE_PAPER,
-                "paper_mode": args.paper_mode,
-                "citation_mode": args.citation_mode,
+                "mode": MODE_STUDY,
+                "emit_study_zip": args.emit_study_zip,
             }
         )
         return
@@ -899,7 +740,7 @@ def run_paper_mode(args) -> None:
         )
         artifact_dir = Path(audit_run_dir)
 
-    run_post_audit_review_and_paper(
+    run_post_audit_review_and_study_bundle(
         run_dir=audit_run_dir,
         artifact_dir=artifact_dir,
         args=args,
@@ -948,8 +789,8 @@ def cleanup_processes() -> None:
 
 def main(argv=None) -> int:
     from ai_scientist.audits.artifacts import AuditArtifactError
-    from ai_scientist.audits.manuscript import ManuscriptGenerationError
     from ai_scientist.audits.plan_review import PlanReviewError
+    from ai_scientist.audits.study import StudyBundleGenerationError
 
     args, parser = parse_arguments(argv)
     args = validate_arguments(args, parser)
@@ -958,8 +799,8 @@ def main(argv=None) -> int:
         if args.mode == MODE_AUDIT:
             run_audit_mode(args)
         else:
-            run_paper_mode(args)
-    except (AuditArtifactError, ManuscriptGenerationError, PlanReviewError, ValueError) as exc:
+            run_study_mode(args)
+    except (AuditArtifactError, PlanReviewError, StudyBundleGenerationError, ValueError) as exc:
         if not args.dry_run:
             cleanup_processes()
         print(f"Run failed: {exc}", file=sys.stderr)

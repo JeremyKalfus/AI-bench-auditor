@@ -2,15 +2,15 @@ import importlib.util
 import json
 import sys
 import types
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from ai_scientist.audits import manuscript as manuscript_module
+from ai_scientist.audits.report import generate_audit_report
 from tests.audit_fixture_utils import (
     make_manager_for_artifact_dir,
-    write_references_bib,
     write_valid_audit_bundle,
 )
 
@@ -60,37 +60,6 @@ def write_benchmark_idea(ideas_path: Path, train_path: Path, test_path: Path) ->
     )
 
 
-def write_verification_stack_results(
-    path: Path,
-    *,
-    status: str = "passed",
-    ablation_passed: bool = True,
-    full_tree_search_adds_value: bool = True,
-) -> None:
-    path.write_text(
-        json.dumps(
-            {
-                "status": status,
-                "phases": {
-                    "canary": {"summary": {"passed": True}},
-                    "mutation": {"summary": {"passed": True}},
-                    "ablation": {
-                        "summary": {
-                            "passed": ablation_passed,
-                            "full_tree_search_adds_value": full_tree_search_adds_value,
-                        }
-                    },
-                    "reproducibility": {"summary": {"passed": True}},
-                    "acceptance": {"summary": {"passed": True}},
-                    "schema_gate": {"passed": True},
-                },
-            },
-            indent=2,
-        )
-        + "\n"
-    )
-
-
 def test_audit_single_command_flow_runs_with_one_pre_research_gate(
     tmp_path, monkeypatch
 ):
@@ -112,10 +81,6 @@ def test_audit_single_command_flow_runs_with_one_pre_research_gate(
     ideas_path = tmp_path / "ideas.json"
     write_benchmark_idea(ideas_path, train_path, test_path)
     run_dir = tmp_path / "single-command-run"
-    references_path = tmp_path / "references.bib"
-    verification_results_path = tmp_path / "verification_stack_results.json"
-    write_references_bib(references_path)
-    write_verification_stack_results(verification_results_path)
 
     input_calls = {"count": 0}
 
@@ -143,19 +108,6 @@ def test_audit_single_command_flow_runs_with_one_pre_research_gate(
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(launcher, "cleanup_processes", lambda: None)
     monkeypatch.setattr(launcher, "save_token_tracker", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        manuscript_module,
-        "_compile_pdf",
-        lambda paper_dir, tex_name: {
-            "requested": True,
-            "attempted": True,
-            "available": True,
-            "succeeded": True,
-            "pdf_path": str((paper_dir / "paper.pdf").resolve()),
-            "log_path": str((paper_dir / "paper_build.log").resolve()),
-            "error": None,
-        },
-    )
     monkeypatch.setitem(
         sys.modules,
         "ai_scientist.treesearch.perform_experiments_bfts_with_agentmanager",
@@ -174,14 +126,6 @@ def test_audit_single_command_flow_runs_with_one_pre_research_gate(
             "required",
             "--plan-review-mode",
             "interactive",
-            "--paper-mode",
-            "on_success",
-            "--citation-mode",
-            "provided",
-            "--references-file",
-            str(references_path),
-            "--verification-stack-results",
-            str(verification_results_path),
         ]
     )
 
@@ -195,26 +139,52 @@ def test_audit_single_command_flow_runs_with_one_pre_research_gate(
     assert (run_dir / "audit_report.md").exists()
     assert (run_dir / "audit_report_review.json").exists()
     assert (run_dir / "audit_report_review.md").exists()
-    assert (run_dir / "paper" / "paper.tex").exists()
-    assert (run_dir / "paper" / "paper_manifest.json").exists()
-    assert (run_dir / "paper_bundle.zip").exists()
+    assert (run_dir / "study_report.md").exists()
+    assert (run_dir / "study_bundle_manifest.json").exists()
+    assert (run_dir / "study_figures").is_dir()
+    assert (run_dir / "study_figures.zip").exists()
 
 
-def test_paper_generation_preconditions_block_when_tree_search_gate_fails(tmp_path):
+def test_study_mode_rebuilds_outputs_for_a_prepared_audit_run(tmp_path, monkeypatch):
     repo_root = Path(__file__).resolve().parents[1]
     launcher = load_launcher(repo_root)
-    verification_results_path = tmp_path / "verification_stack_results.json"
-    write_verification_stack_results(
-        verification_results_path,
-        status="failed",
-        ablation_passed=False,
-        full_tree_search_adds_value=False,
+
+    run_dir = tmp_path / "prepared-run"
+    artifact_dir = write_valid_audit_bundle(run_dir)
+    generate_audit_report(
+        audit_results_path=artifact_dir / "audit_results.json",
+        split_manifest_path=artifact_dir / "split_manifest.json",
+        findings_path=artifact_dir / "findings.csv",
+        metrics_before_after_path=artifact_dir / "metrics_before_after.json",
+        output_path=artifact_dir / "audit_report.md",
+    )
+    (run_dir / "audit_run_metadata.json").write_text(
+        json.dumps(
+            {
+                "contract_version": 1,
+                "mode": "audit",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+            indent=2,
+        )
     )
 
-    with pytest.raises(
-        ValueError, match="search ablation does not show tree search adds value"
-    ):
-        launcher.ensure_paper_generation_preconditions(verification_results_path)
+    monkeypatch.setattr(launcher, "cleanup_processes", lambda: None)
+
+    exit_code = launcher.main(
+        [
+            "--mode",
+            "study",
+            "--audit-run-dir",
+            str(run_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert (run_dir / "audit_report_review.json").exists()
+    assert (run_dir / "study_report.md").exists()
+    assert (run_dir / "study_bundle_manifest.json").exists()
+    assert (run_dir / "study_figures.zip").exists()
 
 
 def test_unapproved_plan_stops_before_research_starts(tmp_path, monkeypatch):
@@ -265,8 +235,6 @@ def test_unapproved_plan_stops_before_research_starts(tmp_path, monkeypatch):
             "required",
             "--plan-review-mode",
             "file",
-            "--paper-mode",
-            "off",
         ]
     )
 
